@@ -101,6 +101,7 @@ type Message = {
   sql?: string;
   results?: Record<string, unknown>[];
   error?: string | null;
+  truncated?: boolean;
 };
 
 export default function Home() {
@@ -135,6 +136,7 @@ export default function Home() {
           sql: data.sql,
           results: data.results,
           error: data.error,
+          truncated: data.truncated,
         },
       ]);
     } catch {
@@ -214,9 +216,16 @@ export default function Home() {
                       {/* Results table */}
                       {msg.results && msg.results.length > 0 && (
                         <div className="rounded-lg border overflow-hidden">
-                          <div className="px-3 py-1.5 border-b text-xs text-muted-foreground uppercase tracking-wider">
-                            {msg.results.length} row
-                            {msg.results.length !== 1 ? "s" : ""}
+                          <div className="px-3 py-1.5 border-b text-xs text-muted-foreground uppercase tracking-wider flex justify-between">
+                            <span>
+                              {msg.results.length} row
+                              {msg.results.length !== 1 ? "s" : ""}
+                            </span>
+                            {msg.truncated && (
+                              <span className="text-yellow-500 font-medium">
+                                ⚠ Truncated to 100 rows
+                              </span>
+                            )}
                           </div>
                           <div className="overflow-auto max-h-64">
                             <Table>

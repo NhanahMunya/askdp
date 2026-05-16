@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import anthropic
 import psycopg
+import sqlglot
 import os
 from dotenv import load_dotenv
 
@@ -50,6 +51,9 @@ CREATE TABLE playlist (playlist_id SERIAL PRIMARY KEY, name VARCHAR(120));
 CREATE TABLE playlist_track (playlist_id INT REFERENCES playlist, track_id INT REFERENCES track);
 """
 
+MAX_ROWS = 100
+STATEMENT_TIMEOUT_MS = 5000
+
 class AskRequest(BaseModel):
     question: str
 
@@ -57,6 +61,21 @@ class AskResponse(BaseModel):
     sql: str
     results: list
     error: str | None = None
+    truncated: bool = False
+    
+#Ensuring that all sqls allowed are only for reading and not updating or deleting or dropping 
+def is_select_only(sql: str) -> bool:
+    """Use sqlglot to parse the SQL and confirm it's a SELECT statement only."""
+    try:
+        statements = sqlglot.parse(sql, dialect="postgres")
+        if not statements:
+            return False
+        for statement in statements:
+            if not isinstance(statement, sqlglot.expressions.Select):
+                return False
+        return True
+    except Exception:
+        return False
 
 @app.post("/api/ask", response_model=AskResponse)
 async def ask(req: AskRequest):
@@ -71,27 +90,55 @@ async def ask(req: AskRequest):
                 "role": "user",
                 "content": f"""You are a SQL expert. Given this Postgres schema:
 
-                {CHINOOK_SCHEMA}
+{CHINOOK_SCHEMA}
 
-                Generate a SQL query to answer: {req.question}
+Generate a SQL query to answer: {req.question}
 
-                Return ONLY the SQL query, no explanation, no markdown, no backticks."""
+Return ONLY the SQL query, no explanation, no markdown, no backticks."""
             }
         ]
     )
 
     sql = message.content[0].text.strip()
 
-    # Step 2: Execute against Postgres
+    # Step 2: Safety check — SELECT only
+    if not is_select_only(sql):
+        return AskResponse(
+            sql=sql,
+            results=[],
+            error="Only read queries allowed. The model generated a non-SELECT statement.",
+            truncated=False
+        )
+
+    # Step 3: Execute against Postgres with timeout and row limit
     try:
         conn = psycopg.connect(os.getenv("DATABASE_URL"))
         cur = conn.cursor()
-        cur.execute(sql)
+
+        # Set hard execution timeout
+        cur.execute(f"SET statement_timeout = {STATEMENT_TIMEOUT_MS}")
+
+        # Wrap query in row limit
+        limited_sql = f"SELECT * FROM ({sql.rstrip(';')}) AS _q LIMIT {MAX_ROWS + 1}"
+        cur.execute(limited_sql)
+
         columns = [desc[0] for desc in cur.description]
         rows = cur.fetchall()
+
+        # Check if truncated
+        truncated = len(rows) > MAX_ROWS
+        rows = rows[:MAX_ROWS]
+
         results = [dict(zip(columns, row)) for row in rows]
         cur.close()
         conn.close()
-        return AskResponse(sql=sql, results=results, error=None)
+
+        return AskResponse(sql=sql, results=results, error=None, truncated=truncated)
+
     except Exception as e:
-        return AskResponse(sql=sql, results=[], error=str(e))
+        return AskResponse(
+            sql=sql,
+            results=[],
+            error=str(e),
+            truncated=False
+        )
