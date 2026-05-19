@@ -95,6 +95,14 @@ CREATE TABLE playlist_track (
   track_id INT REFERENCES track
 );`;
 
+const SAMPLE_QUESTIONS = [
+  "Top 5 customers by spend",
+  "Which genre is most popular?",
+  "Monthly revenue for 2010",
+  "Which employees have the most sales?",
+  "Most popular artist by track count",
+];
+
 type Message = {
   role: "user" | "assistant";
   question?: string;
@@ -104,6 +112,45 @@ type Message = {
   truncated?: boolean;
 };
 
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+
+  async function handleCopy() {
+    await navigator.clipboard.writeText(text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }
+
+  return (
+    <button
+      onClick={handleCopy}
+      className="text-xs text-muted-foreground hover:text-foreground transition-colors px-2 py-0.5 rounded hover:bg-muted"
+    >
+      {copied ? "✓ Copied" : "Copy SQL"}
+    </button>
+  );
+}
+
+function LoadingMessage() {
+  const [dots, setDots] = useState(".");
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setDots((d) => (d.length >= 3 ? "." : d + "."));
+    }, 400);
+    return () => clearInterval(interval);
+  }, []);
+
+  return (
+    <div className="space-y-2 max-w-3xl">
+      <div className="rounded-lg border bg-muted px-4 py-3 text-sm text-muted-foreground flex items-center gap-2">
+        <span className="inline-block w-4 text-center">{dots}</span>
+        <span>Generating SQL and running query</span>
+      </div>
+    </div>
+  );
+}
+
 export default function Home() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [question, setQuestion] = useState("");
@@ -112,13 +159,13 @@ export default function Home() {
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [messages, loading]);
 
-  async function handleAsk() {
-    if (!question.trim() || loading) return;
+  async function handleAsk(q?: string) {
+    const text = q ?? question;
+    if (!text.trim() || loading) return;
 
-    const userMessage: Message = { role: "user", question };
-    setMessages((prev) => [...prev, userMessage]);
+    setMessages((prev) => [...prev, { role: "user", question: text }]);
     setQuestion("");
     setLoading(true);
 
@@ -126,7 +173,7 @@ export default function Home() {
       const res = await fetch("http://127.0.0.1:8000/api/ask", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question }),
+        body: JSON.stringify({ question: text }),
       });
       const data = await res.json();
       setMessages((prev) => [
@@ -142,7 +189,10 @@ export default function Home() {
     } catch {
       setMessages((prev) => [
         ...prev,
-        { role: "assistant", error: "Could not reach the API." },
+        {
+          role: "assistant",
+          error: "Could not reach the API. Is the backend running?",
+        },
       ]);
     } finally {
       setLoading(false);
@@ -152,7 +202,7 @@ export default function Home() {
   return (
     <div className="flex h-screen bg-background text-foreground">
       {/* Left: Schema Viewer */}
-      <aside className="w-80 border-r flex flex-col">
+      <aside className="w-80 border-r flex flex-col shrink-0">
         <div className="p-4 border-b">
           <h2 className="font-semibold text-sm uppercase tracking-wider text-muted-foreground">
             Chinook Schema
@@ -175,13 +225,29 @@ export default function Home() {
 
         {/* Messages */}
         <div className="flex-1 overflow-auto p-4 space-y-6">
-          {messages.length === 0 && (
-            <div className="text-center text-muted-foreground mt-20 space-y-2">
-              <p className="text-2xl">🎵</p>
-              <p className="font-medium">Ask anything about the music store</p>
-              <p className="text-sm">
-                Try: &quot;Who are the top 5 artists by number of tracks?&quot;
-              </p>
+          {/* Empty state with sample chips */}
+          {messages.length === 0 && !loading && (
+            <div className="text-center mt-16 space-y-6">
+              <div className="space-y-2">
+                <p className="text-3xl">🎵</p>
+                <p className="font-medium">
+                  Ask anything about the music store
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  Type a question or try one of these:
+                </p>
+              </div>
+              <div className="flex flex-wrap justify-center gap-2">
+                {SAMPLE_QUESTIONS.map((q) => (
+                  <button
+                    key={q}
+                    onClick={() => handleAsk(q)}
+                    className="text-sm px-3 py-1.5 rounded-full border hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
+                  >
+                    {q}
+                  </button>
+                ))}
+              </div>
             </div>
           )}
 
@@ -198,15 +264,35 @@ export default function Home() {
               {msg.role === "assistant" && (
                 <div className="space-y-3 max-w-3xl">
                   {msg.error ? (
-                    <div className="text-sm text-destructive bg-destructive/10 rounded-lg p-3">
-                      {msg.error}
+                    /* Error state */
+                    <div className="rounded-lg border border-destructive/30 bg-destructive/5 overflow-hidden">
+                      <div className="px-3 py-1.5 border-b border-destructive/20 text-xs text-destructive font-medium flex items-center gap-1.5">
+                        <span>⚠</span> Query Failed
+                      </div>
+                      {msg.sql && (
+                        <div className="border-b border-destructive/10">
+                          <div className="px-3 py-1 text-xs text-muted-foreground flex justify-between items-center">
+                            <span>Generated SQL</span>
+                            <CopyButton text={msg.sql} />
+                          </div>
+                          <pre className="px-3 pb-3 text-xs font-mono overflow-auto">
+                            {msg.sql}
+                          </pre>
+                        </div>
+                      )}
+                      <p className="px-3 py-2 text-xs text-destructive font-mono">
+                        {msg.error}
+                      </p>
                     </div>
                   ) : (
                     <>
                       {/* SQL block */}
                       <div className="rounded-lg border bg-muted overflow-hidden">
-                        <div className="px-3 py-1.5 border-b text-xs text-muted-foreground font-mono uppercase tracking-wider">
-                          Generated SQL
+                        <div className="px-3 py-1.5 border-b text-xs text-muted-foreground flex justify-between items-center">
+                          <span className="uppercase tracking-wider">
+                            Generated SQL
+                          </span>
+                          {msg.sql && <CopyButton text={msg.sql} />}
                         </div>
                         <pre className="p-3 text-xs font-mono overflow-auto">
                           {msg.sql}
@@ -216,8 +302,8 @@ export default function Home() {
                       {/* Results table */}
                       {msg.results && msg.results.length > 0 && (
                         <div className="rounded-lg border overflow-hidden">
-                          <div className="px-3 py-1.5 border-b text-xs text-muted-foreground uppercase tracking-wider flex justify-between">
-                            <span>
+                          <div className="px-3 py-1.5 border-b text-xs text-muted-foreground flex justify-between items-center">
+                            <span className="uppercase tracking-wider">
                               {msg.results.length} row
                               {msg.results.length !== 1 ? "s" : ""}
                             </span>
@@ -227,14 +313,15 @@ export default function Home() {
                               </span>
                             )}
                           </div>
-                          <div className="overflow-auto max-h-64">
+                          {/* Horizontal scroll wrapper */}
+                          <div className="overflow-x-auto max-h-64">
                             <Table>
                               <TableHeader>
                                 <TableRow>
                                   {Object.keys(msg.results[0]).map((col) => (
                                     <TableHead
                                       key={col}
-                                      className="text-xs font-mono"
+                                      className="text-xs font-mono whitespace-nowrap"
                                     >
                                       {col}
                                     </TableHead>
@@ -247,7 +334,7 @@ export default function Home() {
                                     {Object.values(row).map((val, k) => (
                                       <TableCell
                                         key={k}
-                                        className="text-xs font-mono"
+                                        className="text-xs font-mono whitespace-nowrap"
                                       >
                                         {String(val)}
                                       </TableCell>
@@ -271,11 +358,30 @@ export default function Home() {
               )}
             </div>
           ))}
+
+          {/* Loading indicator */}
+          {loading && <LoadingMessage />}
+
           <div ref={bottomRef} />
         </div>
 
         {/* Input */}
-        <div className="p-4 border-t">
+        <div className="p-4 border-t space-y-2">
+          {/* Sample chips when chat has messages */}
+          {messages.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {SAMPLE_QUESTIONS.map((q) => (
+                <button
+                  key={q}
+                  onClick={() => handleAsk(q)}
+                  disabled={loading}
+                  className="text-xs px-2.5 py-1 rounded-full border hover:bg-muted transition-colors text-muted-foreground hover:text-foreground disabled:opacity-40"
+                >
+                  {q}
+                </button>
+              ))}
+            </div>
+          )}
           <div className="flex gap-2">
             <Input
               placeholder="Ask a question about the music store..."
@@ -284,7 +390,7 @@ export default function Home() {
               onKeyDown={(e) => e.key === "Enter" && handleAsk()}
               disabled={loading}
             />
-            <Button onClick={handleAsk} disabled={loading}>
+            <Button onClick={() => handleAsk()} disabled={loading}>
               {loading ? "Thinking..." : "Ask"}
             </Button>
           </div>
