@@ -170,11 +170,14 @@ export default function Home() {
     setLoading(true);
 
     try {
-      const res = await fetch("http://127.0.0.1:8000/api/ask", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: text }),
-      });
+      const res = await fetch(
+        "https://askdp-production.up.railway.app/api/ask",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ question: text }),
+        },
+      );
       const data = await res.json();
       setMessages((prev) => [
         ...prev,
