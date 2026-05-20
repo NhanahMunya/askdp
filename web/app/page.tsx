@@ -114,13 +114,11 @@ type Message = {
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
-
   async function handleCopy() {
     await navigator.clipboard.writeText(text);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   }
-
   return (
     <button
       onClick={handleCopy}
@@ -133,14 +131,12 @@ function CopyButton({ text }: { text: string }) {
 
 function LoadingMessage() {
   const [dots, setDots] = useState(".");
-
   useEffect(() => {
     const interval = setInterval(() => {
       setDots((d) => (d.length >= 3 ? "." : d + "."));
     }, 400);
     return () => clearInterval(interval);
   }, []);
-
   return (
     <div className="space-y-2 max-w-3xl">
       <div className="rounded-lg border bg-muted px-4 py-3 text-sm text-muted-foreground flex items-center gap-2">
@@ -155,6 +151,7 @@ export default function Home() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [question, setQuestion] = useState("");
   const [loading, setLoading] = useState(false);
+  const [schemaOpen, setSchemaOpen] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -164,10 +161,10 @@ export default function Home() {
   async function handleAsk(q?: string) {
     const text = q ?? question;
     if (!text.trim() || loading) return;
-
     setMessages((prev) => [...prev, { role: "user", question: text }]);
     setQuestion("");
     setLoading(true);
+    setSchemaOpen(false); // close schema drawer on mobile when asking
 
     try {
       const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/ask`, {
@@ -200,40 +197,86 @@ export default function Home() {
   }
 
   return (
-    <div className="flex h-screen bg-background text-foreground">
-      {/* Left: Schema Viewer */}
-      <aside className="w-80 border-r flex flex-col shrink-0">
-        <div className="p-4 border-b">
+    <div className="flex h-screen bg-background text-foreground overflow-hidden">
+      {/* Mobile schema drawer overlay */}
+      {schemaOpen && (
+        <div
+          className="fixed inset-0 bg-black/50 z-20 md:hidden"
+          onClick={() => setSchemaOpen(false)}
+        />
+      )}
+
+      {/* Schema Sidebar */}
+      <aside
+        className={`
+          fixed md:static inset-y-0 left-0 z-30
+          w-72 md:w-80 border-r flex flex-col bg-background
+          transform transition-transform duration-300 ease-in-out
+          ${schemaOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0"}
+        `}
+      >
+        <div className="p-4 border-b flex items-center justify-between">
           <h2 className="font-semibold text-sm uppercase tracking-wider text-muted-foreground">
             Chinook Schema
           </h2>
+          <button
+            className="md:hidden text-muted-foreground hover:text-foreground text-lg leading-none"
+            onClick={() => setSchemaOpen(false)}
+          >
+            ✕
+          </button>
         </div>
         <pre className="p-4 text-xs overflow-auto flex-1 leading-relaxed text-muted-foreground whitespace-pre-wrap">
           {SCHEMA}
         </pre>
       </aside>
 
-      {/* Right: Chat */}
+      {/* Main Chat */}
       <main className="flex flex-col flex-1 min-w-0">
         {/* Header */}
-        <div className="p-4 border-b">
-          <h1 className="font-bold text-lg">AskDB</h1>
-          <p className="text-sm text-muted-foreground">
-            Ask questions about the Chinook music store in plain English
-          </p>
+        <div className="p-3 md:p-4 border-b flex items-center gap-3">
+          {/* Schema toggle — mobile only */}
+          <button
+            className="md:hidden text-muted-foreground hover:text-foreground p-1 rounded"
+            onClick={() => setSchemaOpen(true)}
+            aria-label="View schema"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="20"
+              height="20"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke="currentColor"
+              strokeWidth={2}
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M4 6h16M4 12h16M4 18h16"
+              />
+            </svg>
+          </button>
+          <div>
+            <h1 className="font-bold text-base md:text-lg leading-tight">
+              AskDB
+            </h1>
+            <p className="text-xs md:text-sm text-muted-foreground hidden sm:block">
+              Ask questions about the Chinook music store in plain English
+            </p>
+          </div>
         </div>
 
         {/* Messages */}
-        <div className="flex-1 overflow-auto p-4 space-y-6">
-          {/* Empty state with sample chips */}
+        <div className="flex-1 overflow-auto p-3 md:p-4 space-y-6">
           {messages.length === 0 && !loading && (
-            <div className="text-center mt-16 space-y-6">
+            <div className="text-center mt-10 md:mt-16 space-y-4 md:space-y-6 px-2">
               <div className="space-y-2">
                 <p className="text-3xl">🎵</p>
-                <p className="font-medium">
+                <p className="font-medium text-sm md:text-base">
                   Ask anything about the music store
                 </p>
-                <p className="text-sm text-muted-foreground">
+                <p className="text-xs md:text-sm text-muted-foreground">
                   Type a question or try one of these:
                 </p>
               </div>
@@ -242,7 +285,7 @@ export default function Home() {
                   <button
                     key={q}
                     onClick={() => handleAsk(q)}
-                    className="text-sm px-3 py-1.5 rounded-full border hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
+                    className="text-xs md:text-sm px-3 py-1.5 rounded-full border hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
                   >
                     {q}
                   </button>
@@ -255,16 +298,15 @@ export default function Home() {
             <div key={i}>
               {msg.role === "user" && (
                 <div className="flex justify-end">
-                  <div className="bg-primary text-primary-foreground rounded-2xl rounded-tr-sm px-4 py-2 max-w-lg text-sm">
+                  <div className="bg-primary text-primary-foreground rounded-2xl rounded-tr-sm px-3 md:px-4 py-2 max-w-[85%] md:max-w-lg text-sm">
                     {msg.question}
                   </div>
                 </div>
               )}
 
               {msg.role === "assistant" && (
-                <div className="space-y-3 max-w-3xl">
+                <div className="space-y-3 max-w-full md:max-w-3xl">
                   {msg.error ? (
-                    /* Error state */
                     <div className="rounded-lg border border-destructive/30 bg-destructive/5 overflow-hidden">
                       <div className="px-3 py-1.5 border-b border-destructive/20 text-xs text-destructive font-medium flex items-center gap-1.5">
                         <span>⚠</span> Query Failed
@@ -280,13 +322,12 @@ export default function Home() {
                           </pre>
                         </div>
                       )}
-                      <p className="px-3 py-2 text-xs text-destructive font-mono">
+                      <p className="px-3 py-2 text-xs text-destructive font-mono break-words">
                         {msg.error}
                       </p>
                     </div>
                   ) : (
                     <>
-                      {/* SQL block */}
                       <div className="rounded-lg border bg-muted overflow-hidden">
                         <div className="px-3 py-1.5 border-b text-xs text-muted-foreground flex justify-between items-center">
                           <span className="uppercase tracking-wider">
@@ -299,7 +340,6 @@ export default function Home() {
                         </pre>
                       </div>
 
-                      {/* Results table */}
                       {msg.results && msg.results.length > 0 && (
                         <div className="rounded-lg border overflow-hidden">
                           <div className="px-3 py-1.5 border-b text-xs text-muted-foreground flex justify-between items-center">
@@ -313,7 +353,6 @@ export default function Home() {
                               </span>
                             )}
                           </div>
-                          {/* Horizontal scroll wrapper */}
                           <div className="overflow-x-auto max-h-64">
                             <Table>
                               <TableHeader>
@@ -359,15 +398,12 @@ export default function Home() {
             </div>
           ))}
 
-          {/* Loading indicator */}
           {loading && <LoadingMessage />}
-
           <div ref={bottomRef} />
         </div>
 
         {/* Input */}
-        <div className="p-4 border-t space-y-2">
-          {/* Sample chips when chat has messages */}
+        <div className="p-3 md:p-4 border-t space-y-2">
           {messages.length > 0 && (
             <div className="flex flex-wrap gap-1.5">
               {SAMPLE_QUESTIONS.map((q) => (
@@ -384,14 +420,20 @@ export default function Home() {
           )}
           <div className="flex gap-2">
             <Input
-              placeholder="Ask a question about the music store..."
+              placeholder="Ask a question..."
               value={question}
               onChange={(e) => setQuestion(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && handleAsk()}
               disabled={loading}
+              className="text-sm"
             />
-            <Button onClick={() => handleAsk()} disabled={loading}>
-              {loading ? "Thinking..." : "Ask"}
+            <Button
+              onClick={() => handleAsk()}
+              disabled={loading}
+              size="sm"
+              className="shrink-0"
+            >
+              {loading ? "..." : "Ask"}
             </Button>
           </div>
         </div>
