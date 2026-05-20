@@ -90,7 +90,7 @@ class AskResponse(BaseModel):
 
 def is_select_only(sql: str) -> bool:
     try:
-        statements = sqlglot.parse(sql, dialect="postgres")
+        statements = sqlglot.parse(sql.rstrip(';'), dialect="postgres")
         if not statements:
             return False
         for statement in statements:
