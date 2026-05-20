@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 load_dotenv("../.env")
 
 app = FastAPI()
-
+#allow cross-origin requests from localhost:3000 and askdp.vercel.app, which are the frontend origins that will call this API
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
