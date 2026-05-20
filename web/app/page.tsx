@@ -170,14 +170,11 @@ export default function Home() {
     setLoading(true);
 
     try {
-      const res = await fetch(
-        "https://askdp-production.up.railway.app/api/ask",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ question: text }),
-        },
-      );
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/ask`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question: text }),
+      });
       const data = await res.json();
       setMessages((prev) => [
         ...prev,
