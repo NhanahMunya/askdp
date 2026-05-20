@@ -1,16 +1,33 @@
-from fastapi import FastAPI
+import time
+import os
+import sentry_sdk
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 import anthropic
 import psycopg
 import sqlglot
-import os
 from dotenv import load_dotenv
 
 load_dotenv("../.env")
 
+# Sentry
+sentry_sdk.init(
+    dsn=os.getenv("SENTRY_DSN"),
+    send_default_pii=True,
+    traces_sample_rate=1.0,
+)
+
+# Rate limiter
+limiter = Limiter(key_func=get_remote_address)
+
 app = FastAPI()
-#allow cross-origin requests from localhost:3000 and askdp.vercel.app, which are the frontend origins that will call this API
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -57,18 +74,21 @@ CREATE TABLE playlist_track (playlist_id INT REFERENCES playlist, track_id INT R
 MAX_ROWS = 100
 STATEMENT_TIMEOUT_MS = 5000
 
+
 class AskRequest(BaseModel):
     question: str
+
 
 class AskResponse(BaseModel):
     sql: str
     results: list
     error: str | None = None
     truncated: bool = False
-    
-#Ensuring that all sqls allowed are only for reading and not updating or deleting or dropping 
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+
 def is_select_only(sql: str) -> bool:
-    """Use sqlglot to parse the SQL and confirm it's a SELECT statement only."""
     try:
         statements = sqlglot.parse(sql, dialect="postgres")
         if not statements:
@@ -80,13 +100,53 @@ def is_select_only(sql: str) -> bool:
     except Exception:
         return False
 
+
+def log_query(
+    question: str,
+    sql: str,
+    result_rows: int,
+    error: str | None,
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    duration_ms: int,
+    ip_address: str,
+):
+    try:
+        conn = psycopg.connect(os.getenv("DATABASE_URL"))
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO query_log
+                (question, sql_generated, result_rows, error, model,
+                 input_tokens, output_tokens, duration_ms, ip_address)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (question, sql, result_rows, error, model,
+             input_tokens, output_tokens, duration_ms, ip_address),
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        sentry_sdk.capture_exception(e)
+
+
 @app.post("/api/ask", response_model=AskResponse)
-async def ask(req: AskRequest):
+@limiter.limit("10/minute")
+async def ask(req: AskRequest, request: Request):
+    start = time.time()
+    ip = get_remote_address(request)
+    model_name = "claude-sonnet-4-5"
+    sql = ""
+    input_tokens = 0
+    output_tokens = 0
+
     # Step 1: Ask Claude to generate SQL
     client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
     message = client.messages.create(
-        model="claude-sonnet-4-6",
+        model=model_name,
         max_tokens=1024,
         messages=[
             {
@@ -97,51 +157,66 @@ async def ask(req: AskRequest):
 
 Generate a SQL query to answer: {req.question}
 
-Return ONLY the SQL query, no explanation, no markdown, no backticks."""
+Return ONLY the SQL query, no explanation, no markdown, no backticks.""",
             }
-        ]
+        ],
     )
 
     sql = message.content[0].text.strip()
+    input_tokens = message.usage.input_tokens
+    output_tokens = message.usage.output_tokens
 
-    # Step 2: Safety check — SELECT only
+    # Step 2: Safety check
     if not is_select_only(sql):
+        duration_ms = int((time.time() - start) * 1000)
+        log_query(req.question, sql, 0,
+                  "Only read queries allowed.", model_name,
+                  input_tokens, output_tokens, duration_ms, ip)
         return AskResponse(
             sql=sql,
             results=[],
             error="Only read queries allowed. The model generated a non-SELECT statement.",
-            truncated=False
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
         )
 
-    # Step 3: Execute against Postgres with timeout and row limit
+    # Step 3: Execute against Postgres
     try:
         conn = psycopg.connect(os.getenv("DATABASE_URL"))
         cur = conn.cursor()
-
-        # Set hard execution timeout
         cur.execute(f"SET statement_timeout = {STATEMENT_TIMEOUT_MS}")
-
-        # Wrap query in row limit
         limited_sql = f"SELECT * FROM ({sql.rstrip(';')}) AS _q LIMIT {MAX_ROWS + 1}"
         cur.execute(limited_sql)
-
         columns = [desc[0] for desc in cur.description]
         rows = cur.fetchall()
-
-        # Check if truncated
         truncated = len(rows) > MAX_ROWS
         rows = rows[:MAX_ROWS]
-
         results = [dict(zip(columns, row)) for row in rows]
         cur.close()
         conn.close()
 
-        return AskResponse(sql=sql, results=results, error=None, truncated=truncated)
+        duration_ms = int((time.time() - start) * 1000)
+        log_query(req.question, sql, len(results), None, model_name,
+                  input_tokens, output_tokens, duration_ms, ip)
+
+        return AskResponse(
+            sql=sql,
+            results=results,
+            error=None,
+            truncated=truncated,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        )
 
     except Exception as e:
+        duration_ms = int((time.time() - start) * 1000)
+        log_query(req.question, sql, 0, str(e), model_name,
+                  input_tokens, output_tokens, duration_ms, ip)
+        sentry_sdk.capture_exception(e)
         return AskResponse(
             sql=sql,
             results=[],
             error=str(e),
-            truncated=False
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
         )
