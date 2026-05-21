@@ -7,3 +7,4 @@ sqlglot
 slowapi
 sentry-sdk
 pandas
+python-multipart

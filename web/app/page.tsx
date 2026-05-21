@@ -12,7 +12,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 
-const SCHEMA = `CREATE TABLE artist (
+const CHINOOK_SCHEMA = `CREATE TABLE artist (
   artist_id SERIAL PRIMARY KEY,
   name VARCHAR(120)
 );
@@ -112,6 +112,14 @@ type Message = {
   truncated?: boolean;
 };
 
+type SessionInfo = {
+  session_id: string;
+  table_name: string;
+  schema_string: string;
+  row_count: number;
+  column_count: number;
+};
+
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
   async function handleCopy() {
@@ -152,11 +160,49 @@ export default function Home() {
   const [question, setQuestion] = useState("");
   const [loading, setLoading] = useState(false);
   const [schemaOpen, setSchemaOpen] = useState(false);
+  const [session, setSession] = useState<SessionInfo | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
+
+  // Active schema display — CSV or Chinook
+  const activeSchema = session ? session.schema_string : CHINOOK_SCHEMA;
+  const activeLabel = session
+    ? `${session.table_name} (${session.row_count} rows, ${session.column_count} cols)`
+    : "Chinook (default)";
+
+  async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+
+    const formData = new FormData();
+    formData.append("file", file);
+
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/upload`, {
+        method: "POST",
+        body: formData,
+      });
+      const data = await res.json();
+      setSession(data);
+      setMessages([]);
+    } catch {
+      alert("Upload failed. Make sure the file is a valid CSV.");
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
+
+  function handleClearSession() {
+    setSession(null);
+    setMessages([]);
+  }
 
   async function handleAsk(q?: string) {
     const text = q ?? question;
@@ -164,13 +210,16 @@ export default function Home() {
     setMessages((prev) => [...prev, { role: "user", question: text }]);
     setQuestion("");
     setLoading(true);
-    setSchemaOpen(false); // close schema drawer on mobile when asking
+    setSchemaOpen(false);
 
     try {
       const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/ask`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: text }),
+        body: JSON.stringify({
+          question: text,
+          session_id: session?.session_id ?? null,
+        }),
       });
       const data = await res.json();
       setMessages((prev) => [
@@ -198,7 +247,7 @@ export default function Home() {
 
   return (
     <div className="flex h-screen bg-background text-foreground overflow-hidden">
-      {/* Mobile schema drawer overlay */}
+      {/* Mobile overlay */}
       {schemaOpen && (
         <div
           className="fixed inset-0 bg-black/50 z-20 md:hidden"
@@ -215,10 +264,16 @@ export default function Home() {
           ${schemaOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0"}
         `}
       >
-        <div className="p-4 border-b flex items-center justify-between">
-          <h2 className="font-semibold text-sm uppercase tracking-wider text-muted-foreground">
-            Chinook Schema
-          </h2>
+        {/* Sidebar header */}
+        <div className="p-4 border-b flex items-center justify-between shrink-0">
+          <div>
+            <h2 className="font-semibold text-sm uppercase tracking-wider text-muted-foreground">
+              Schema
+            </h2>
+            <p className="text-xs text-muted-foreground mt-0.5 truncate max-w-[180px]">
+              {activeLabel}
+            </p>
+          </div>
           <button
             className="md:hidden text-muted-foreground hover:text-foreground text-lg leading-none"
             onClick={() => setSchemaOpen(false)}
@@ -226,8 +281,56 @@ export default function Home() {
             ✕
           </button>
         </div>
+
+        {/* Upload / Clear controls */}
+        <div className="p-3 border-b space-y-2 shrink-0">
+          {!session ? (
+            <>
+              <p className="text-xs text-muted-foreground">
+                Upload a CSV to query your own data. Chinook is used by default.
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                className="w-full text-xs"
+                disabled={uploading}
+                onClick={() => fileInputRef.current?.click()}
+              >
+                {uploading ? "Uploading..." : "⬆ Upload CSV"}
+              </Button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".csv"
+                className="hidden"
+                onChange={handleUpload}
+              />
+            </>
+          ) : (
+            <>
+              <div className="rounded-md bg-green-500/10 border border-green-500/20 px-3 py-2">
+                <p className="text-xs text-green-600 font-medium">
+                  ✓ CSV loaded
+                </p>
+                <p className="text-xs text-muted-foreground mt-0.5 truncate">
+                  {session.table_name}
+                </p>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                className="w-full text-xs"
+                onClick={handleClearSession}
+              >
+                ✕ Clear — switch to Chinook
+              </Button>
+            </>
+          )}
+        </div>
+
+        {/* Schema display */}
         <pre className="p-4 text-xs overflow-auto flex-1 leading-relaxed text-muted-foreground whitespace-pre-wrap">
-          {SCHEMA}
+          {activeSchema}
         </pre>
       </aside>
 
@@ -235,7 +338,6 @@ export default function Home() {
       <main className="flex flex-col flex-1 min-w-0">
         {/* Header */}
         <div className="p-3 md:p-4 border-b flex items-center gap-3">
-          {/* Schema toggle — mobile only */}
           <button
             className="md:hidden text-muted-foreground hover:text-foreground p-1 rounded"
             onClick={() => setSchemaOpen(true)}
@@ -257,40 +359,88 @@ export default function Home() {
               />
             </svg>
           </button>
-          <div>
+          <div className="flex-1 min-w-0">
             <h1 className="font-bold text-base md:text-lg leading-tight">
               AskDB
             </h1>
             <p className="text-xs md:text-sm text-muted-foreground hidden sm:block">
-              Ask questions about the Chinook music store in plain English
+              {session
+                ? `Querying: ${session.table_name} — ${session.row_count} rows`
+                : "Querying: Chinook music store (default)"}
             </p>
           </div>
+
+          {/* Upload button in header for desktop */}
+          <div className="hidden md:block shrink-0">
+            {!session ? (
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-xs"
+                  disabled={uploading}
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  {uploading ? "Uploading..." : "⬆ Upload CSV"}
+                </Button>
+              </>
+            ) : (
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-xs"
+                onClick={handleClearSession}
+              >
+                ✕ Clear CSV
+              </Button>
+            )}
+          </div>
         </div>
+
+        {/* Dataset banner */}
+        {!session && (
+          <div className="px-4 py-2 bg-muted/50 border-b text-xs text-muted-foreground flex items-center gap-2">
+            <span>📀</span>
+            <span>
+              No CSV uploaded — using the{" "}
+              <span className="font-medium text-foreground">
+                Chinook music store
+              </span>{" "}
+              database by default.
+            </span>
+          </div>
+        )}
 
         {/* Messages */}
         <div className="flex-1 overflow-auto p-3 md:p-4 space-y-6">
           {messages.length === 0 && !loading && (
             <div className="text-center mt-10 md:mt-16 space-y-4 md:space-y-6 px-2">
               <div className="space-y-2">
-                <p className="text-3xl">🎵</p>
+                <p className="text-3xl">{session ? "📊" : "🎵"}</p>
                 <p className="font-medium text-sm md:text-base">
-                  Ask anything about the music store
+                  {session
+                    ? `Ask anything about ${session.table_name}`
+                    : "Ask anything about the music store"}
                 </p>
                 <p className="text-xs md:text-sm text-muted-foreground">
-                  Type a question or try one of these:
+                  {session
+                    ? `${session.row_count} rows · ${session.column_count} columns loaded`
+                    : "Type a question or try one of these:"}
                 </p>
               </div>
-              <div className="flex flex-wrap justify-center gap-2">
-                {SAMPLE_QUESTIONS.map((q) => (
-                  <button
-                    key={q}
-                    onClick={() => handleAsk(q)}
-                    className="text-xs md:text-sm px-3 py-1.5 rounded-full border hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
-                  >
-                    {q}
-                  </button>
-                ))}
-              </div>
+              {!session && (
+                <div className="flex flex-wrap justify-center gap-2">
+                  {SAMPLE_QUESTIONS.map((q) => (
+                    <button
+                      key={q}
+                      onClick={() => handleAsk(q)}
+                      className="text-xs md:text-sm px-3 py-1.5 rounded-full border hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
+                    >
+                      {q}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
@@ -404,7 +554,7 @@ export default function Home() {
 
         {/* Input */}
         <div className="p-3 md:p-4 border-t space-y-2">
-          {messages.length > 0 && (
+          {messages.length > 0 && !session && (
             <div className="flex flex-wrap gap-1.5">
               {SAMPLE_QUESTIONS.map((q) => (
                 <button
@@ -420,7 +570,11 @@ export default function Home() {
           )}
           <div className="flex gap-2">
             <Input
-              placeholder="Ask a question..."
+              placeholder={
+                session
+                  ? `Ask about ${session.table_name}...`
+                  : "Ask about the music store..."
+              }
               value={question}
               onChange={(e) => setQuestion(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && handleAsk()}
