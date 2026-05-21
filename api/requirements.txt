@@ -6,3 +6,4 @@ python-dotenv
 sqlglot
 slowapi
 sentry-sdk
+pandas

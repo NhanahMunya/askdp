@@ -274,6 +274,8 @@ Pattern 2: Technical correctness with noisy output
 - Phase 2 implication: Either prompt the model toward minimal columns
   (cheap, partial fix), or add a result-presentation layer that decides
   which columns to show based on the question type (cleaner, more work).
+
+> The dominant failure mode is output noise (6 of 7 partials) rather than SQL incorrectness. Phase 2 will therefore prioritize a result-presentation layer over prompting changes, and will introduce CSV upload to test the system on databases outside Chinook to ensure the 100% execution accuracy isn't an artifact of dataset familiarity.
 ```
 
 ---
