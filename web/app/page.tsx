@@ -11,6 +11,23 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  BarChart,
+  Bar,
+  LineChart,
+  Line,
+  PieChart,
+  Pie,
+  Cell,
+  ScatterChart,
+  Scatter,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Legend,
+  ResponsiveContainer,
+} from "recharts";
 
 const CHINOOK_SCHEMA = `CREATE TABLE artist (
   artist_id SERIAL PRIMARY KEY,
@@ -119,6 +136,345 @@ type SessionInfo = {
   row_count: number;
   column_count: number;
 };
+
+//Chart logic
+
+const CHART_COLORS = [
+  "#6366f1",
+  "#22c55e",
+  "#f59e0b",
+  "#ef4444",
+  "#3b82f6",
+  "#ec4899",
+  "#14b8a6",
+  "#f97316",
+];
+
+type ChartType =
+  | "bar-horizontal"
+  | "bar-vertical"
+  | "line"
+  | "pie"
+  | "scatter"
+  | "grouped-bar"
+  | null;
+
+function detectChartType(results: Record<string, unknown>[]): ChartType {
+  if (!results || results.length === 0) return null;
+
+  const keys = Object.keys(results[0]);
+  if (keys.length < 2) return null;
+
+  const isNumeric = (key: string) =>
+    results.every((r) => r[key] === null || !isNaN(Number(r[key])));
+
+  const isTimeKey = (key: string) =>
+    /month|date|year|day|week|quarter/i.test(key);
+
+  const textCols = keys.filter((k) => !isNumeric(k));
+  const numCols = keys.filter((k) => isNumeric(k));
+
+  // All numeric → scatter
+  if (textCols.length === 0 && numCols.length === 2) return "scatter";
+
+  // 1 text + 1 numeric
+  if (textCols.length === 1 && numCols.length === 1) {
+    if (isTimeKey(textCols[0])) return "line";
+    if (results.length <= 8) return "pie";
+    return "bar-horizontal";
+  }
+
+  // 1 text + multiple numeric → grouped bar
+  if (textCols.length === 1 && numCols.length > 1) return "grouped-bar";
+
+  // 2 numeric columns
+  if (numCols.length === 2 && textCols.length === 0) return "scatter";
+
+  return null;
+}
+
+function ResultBlock({
+  results,
+  truncated,
+}: {
+  results: Record<string, unknown>[];
+  truncated?: boolean;
+}) {
+  const [showChart, setShowChart] = useState(true);
+  const chartType = detectChartType(results);
+  const isChartable = chartType !== null;
+
+  return (
+    <div className="space-y-2">
+      {/* Chart toggle bar */}
+      {isChartable && (
+        <div className="flex items-center justify-between px-1">
+          <span className="text-xs text-muted-foreground capitalize">
+            {chartType?.replace("-", " ")} chart
+          </span>
+          <button
+            onClick={() => setShowChart((v) => !v)}
+            className="text-xs px-2.5 py-1 rounded-full border hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
+          >
+            {showChart ? "Hide chart" : "Show chart"}
+          </button>
+        </div>
+      )}
+
+      {/* Chart */}
+      {isChartable && showChart && (
+        <div className="rounded-lg border bg-background p-3 overflow-x-auto">
+          <SmartChart results={results} />
+        </div>
+      )}
+
+      {/* Table */}
+      <div className="rounded-lg border overflow-hidden">
+        <div className="px-3 py-1.5 border-b text-xs text-muted-foreground flex justify-between items-center">
+          <span className="uppercase tracking-wider">
+            {results.length} row{results.length !== 1 ? "s" : ""}
+          </span>
+          {truncated && (
+            <span className="text-yellow-500 font-medium">
+              ⚠ Truncated to 100 rows
+            </span>
+          )}
+        </div>
+        <div className="overflow-x-auto max-h-64">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                {Object.keys(results[0]).map((col) => (
+                  <TableHead
+                    key={col}
+                    className="text-xs font-mono whitespace-nowrap"
+                  >
+                    {col}
+                  </TableHead>
+                ))}
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {results.map((row, j) => (
+                <TableRow key={j}>
+                  {Object.values(row).map((val, k) => (
+                    <TableCell
+                      key={k}
+                      className="text-xs font-mono whitespace-nowrap"
+                    >
+                      {String(val)}
+                    </TableCell>
+                  ))}
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SmartChart({ results }: { results: Record<string, unknown>[] }) {
+  const chartType = detectChartType(results);
+  if (!chartType) return null;
+
+  const keys = Object.keys(results[0]);
+  const isNumeric = (key: string) =>
+    results.every((r) => r[key] === null || !isNaN(Number(r[key])));
+
+  const textCols = keys.filter((k) => !isNumeric(k));
+  const numCols = keys.filter((k) => isNumeric(k));
+
+  const labelKey = textCols[0] ?? keys[0];
+  const valueKey = numCols[0] ?? keys[1];
+
+  const data = results.map((r) => ({
+    ...r,
+    [valueKey]: Number(r[valueKey]),
+  }));
+
+  const formatValue = (v: number) => {
+    if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
+    if (v >= 1_000) return `${(v / 1_000).toFixed(1)}k`;
+    return String(v);
+  };
+
+  if (chartType === "line") {
+    return (
+      <ResponsiveContainer width="100%" height={260}>
+        <LineChart
+          data={data}
+          margin={{ top: 8, right: 16, left: 0, bottom: 40 }}
+        >
+          <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
+          <XAxis
+            dataKey={labelKey}
+            tick={{ fontSize: 11 }}
+            angle={-35}
+            textAnchor="end"
+          />
+          <YAxis tick={{ fontSize: 11 }} tickFormatter={formatValue} />
+          <Tooltip formatter={(v: number) => formatValue(v)} />
+          <Line
+            type="monotone"
+            dataKey={valueKey}
+            stroke={CHART_COLORS[0]}
+            strokeWidth={2}
+            dot={{ r: 3 }}
+            activeDot={{ r: 5 }}
+          />
+        </LineChart>
+      </ResponsiveContainer>
+    );
+  }
+
+  if (chartType === "pie") {
+    return (
+      <ResponsiveContainer width="100%" height={260}>
+        <PieChart>
+          <Pie
+            data={data}
+            dataKey={valueKey}
+            nameKey={labelKey}
+            cx="50%"
+            cy="50%"
+            outerRadius={90}
+            label={({ name, percent }) =>
+              `${name} ${(percent * 100).toFixed(0)}%`
+            }
+            labelLine={true}
+          >
+            {data.map((_, i) => (
+              <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
+            ))}
+          </Pie>
+          <Tooltip formatter={(v: number) => formatValue(v)} />
+        </PieChart>
+      </ResponsiveContainer>
+    );
+  }
+
+  if (chartType === "bar-horizontal") {
+    return (
+      <ResponsiveContainer
+        width="100%"
+        height={Math.max(260, results.length * 36)}
+      >
+        <BarChart
+          data={data}
+          layout="vertical"
+          margin={{ top: 8, right: 32, left: 8, bottom: 8 }}
+        >
+          <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
+          <XAxis
+            type="number"
+            tick={{ fontSize: 11 }}
+            tickFormatter={formatValue}
+          />
+          <YAxis
+            type="category"
+            dataKey={labelKey}
+            tick={{ fontSize: 11 }}
+            width={120}
+          />
+          <Tooltip formatter={(v: number) => formatValue(v)} />
+          <Bar dataKey={valueKey} fill={CHART_COLORS[0]} radius={[0, 4, 4, 0]}>
+            {data.map((_, i) => (
+              <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
+            ))}
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
+    );
+  }
+
+  if (chartType === "bar-vertical") {
+    return (
+      <ResponsiveContainer width="100%" height={260}>
+        <BarChart
+          data={data}
+          margin={{ top: 8, right: 16, left: 0, bottom: 40 }}
+        >
+          <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
+          <XAxis
+            dataKey={labelKey}
+            tick={{ fontSize: 11 }}
+            angle={-35}
+            textAnchor="end"
+          />
+          <YAxis tick={{ fontSize: 11 }} tickFormatter={formatValue} />
+          <Tooltip formatter={(v: number) => formatValue(v)} />
+          <Bar dataKey={valueKey} radius={[4, 4, 0, 0]}>
+            {data.map((_, i) => (
+              <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
+            ))}
+          </Bar>
+        </BarChart>
+      </ResponsiveContainer>
+    );
+  }
+
+  if (chartType === "scatter") {
+    const xKey = numCols[0];
+    const yKey = numCols[1];
+    return (
+      <ResponsiveContainer width="100%" height={260}>
+        <ScatterChart margin={{ top: 8, right: 16, left: 0, bottom: 8 }}>
+          <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
+          <XAxis
+            dataKey={xKey}
+            type="number"
+            tick={{ fontSize: 11 }}
+            name={xKey}
+            tickFormatter={formatValue}
+          />
+          <YAxis
+            dataKey={yKey}
+            type="number"
+            tick={{ fontSize: 11 }}
+            name={yKey}
+            tickFormatter={formatValue}
+          />
+          <Tooltip cursor={{ strokeDasharray: "3 3" }} />
+          <Scatter data={data} fill={CHART_COLORS[0]} />
+        </ScatterChart>
+      </ResponsiveContainer>
+    );
+  }
+
+  if (chartType === "grouped-bar") {
+    return (
+      <ResponsiveContainer width="100%" height={280}>
+        <BarChart
+          data={data}
+          margin={{ top: 8, right: 16, left: 0, bottom: 40 }}
+        >
+          <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
+          <XAxis
+            dataKey={labelKey}
+            tick={{ fontSize: 11 }}
+            angle={-35}
+            textAnchor="end"
+          />
+          <YAxis tick={{ fontSize: 11 }} tickFormatter={formatValue} />
+          <Tooltip formatter={(v: number) => formatValue(v)} />
+          <Legend />
+          {numCols.map((col, i) => (
+            <Bar
+              key={col}
+              dataKey={col}
+              fill={CHART_COLORS[i % CHART_COLORS.length]}
+              radius={[4, 4, 0, 0]}
+            />
+          ))}
+        </BarChart>
+      </ResponsiveContainer>
+    );
+  }
+
+  return null;
+}
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
@@ -491,49 +847,10 @@ export default function Home() {
                       </div>
 
                       {msg.results && msg.results.length > 0 && (
-                        <div className="rounded-lg border overflow-hidden">
-                          <div className="px-3 py-1.5 border-b text-xs text-muted-foreground flex justify-between items-center">
-                            <span className="uppercase tracking-wider">
-                              {msg.results.length} row
-                              {msg.results.length !== 1 ? "s" : ""}
-                            </span>
-                            {msg.truncated && (
-                              <span className="text-yellow-500 font-medium">
-                                ⚠ Truncated to 100 rows
-                              </span>
-                            )}
-                          </div>
-                          <div className="overflow-x-auto max-h-64">
-                            <Table>
-                              <TableHeader>
-                                <TableRow>
-                                  {Object.keys(msg.results[0]).map((col) => (
-                                    <TableHead
-                                      key={col}
-                                      className="text-xs font-mono whitespace-nowrap"
-                                    >
-                                      {col}
-                                    </TableHead>
-                                  ))}
-                                </TableRow>
-                              </TableHeader>
-                              <TableBody>
-                                {msg.results.map((row, j) => (
-                                  <TableRow key={j}>
-                                    {Object.values(row).map((val, k) => (
-                                      <TableCell
-                                        key={k}
-                                        className="text-xs font-mono whitespace-nowrap"
-                                      >
-                                        {String(val)}
-                                      </TableCell>
-                                    ))}
-                                  </TableRow>
-                                ))}
-                              </TableBody>
-                            </Table>
-                          </div>
-                        </div>
+                        <ResultBlock
+                          results={msg.results}
+                          truncated={msg.truncated}
+                        />
                       )}
 
                       {msg.results && msg.results.length === 0 && (
