@@ -147,6 +147,94 @@ def log_query(
     except Exception as e:
         sentry_sdk.capture_exception(e)
 
+# Self healing sql logic
+def log_retry(
+    question: str,
+    original_sql: str,
+    error: str,
+    retry_number: int,
+    healed_sql: str,
+    healed_successfully: bool,
+):
+    try:
+        conn = psycopg.connect(os.getenv("DATABASE_URL"))
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO query_retry_log
+                (question, original_sql, error, retry_number,
+                 healed_sql, healed_successfully)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+            (question, original_sql, error, retry_number,
+             healed_sql, healed_successfully),
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        sentry_sdk.capture_exception(e)
+
+
+def heal_query(
+    client: anthropic.Anthropic,
+    question: str,
+    schema_context: str,
+    failed_sql: str,
+    error: str,
+    attempt: int,
+) -> tuple[str, list[str], str | None]:
+    """Ask Claude to fix a failed SQL query. Returns (sql, display_columns, chart_hint)."""
+    import json
+
+    message = client.messages.create(
+        model="claude-sonnet-4-5",
+        max_tokens=1024,
+        messages=[
+            {
+                "role": "user",
+                "content": f"""You are a SQL expert. A query you generated failed.
+
+                Schema:
+                {schema_context}
+
+                Original question: {question}
+
+                Failed SQL:
+                {failed_sql}
+
+                Error:
+                {error}
+
+                Fix the SQL so it answers the original question correctly.
+
+                Return a JSON object with exactly these fields:
+                {{
+                "sql": "the corrected SQL query",
+                "display_columns": ["col1", "col2"],
+                "chart_hint": "bar" | "line" | "pie" | "scatter" | null
+                }}
+
+                Rules:
+                - "sql": valid Postgres SQL, no markdown, no backticks
+                - "display_columns": only columns a non-technical human would want to see, exclude _id columns unless asked
+                - "chart_hint": suggest chart type if numeric result, null otherwise
+
+                Return ONLY the JSON object. No explanation, no markdown, no backticks.""",
+            }
+        ],
+    )
+
+    raw = message.content[0].text.strip()
+    try:
+        clean = raw.replace("```json", "").replace("```", "").strip()
+        parsed = json.loads(clean)
+        sql = parsed.get("sql", "").strip()
+        display_columns = parsed.get("display_columns", [])
+        chart_hint = parsed.get("chart_hint", None)
+        return sql, display_columns, chart_hint
+    except Exception:
+        return raw.strip(), [], None
 
 # ── Models ────────────────────────────────────────────────────────────────────
 class AskRequest(BaseModel):
@@ -388,49 +476,94 @@ async def ask(req: AskRequest, request: Request):
             output_tokens=output_tokens,
         )
 
-    # Execute
-    try:
-        conn = psycopg.connect(os.getenv("DATABASE_URL"))
-        cur = conn.cursor()
-        cur.execute(f"SET statement_timeout = {STATEMENT_TIMEOUT_MS}")
-        limited_sql = (
-            f"SELECT * FROM ({sql.rstrip(';')}) AS _q LIMIT {MAX_ROWS + 1}"
-        )
-        cur.execute(limited_sql)
-        cols = [desc[0] for desc in cur.description]
-        rows = cur.fetchall()
-        truncated = len(rows) > MAX_ROWS
-        rows = rows[:MAX_ROWS]
-        results = [dict(zip(cols, row)) for row in rows]
-        cur.close()
-        conn.close()
+    # Execute with self-healing retry loop
+    MAX_RETRIES = 2
+    current_sql = sql
+    current_display_columns = display_columns
+    current_chart_hint = chart_hint
+    last_error = None
 
-        duration_ms = int((time.time() - start) * 1000)
-        log_query(req.question, sql, len(results), None, model_name,
-                  input_tokens, output_tokens, duration_ms, ip)
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            conn = psycopg.connect(os.getenv("DATABASE_URL"))
+            cur = conn.cursor()
+            cur.execute(f"SET statement_timeout = {STATEMENT_TIMEOUT_MS}")
+            limited_sql = (
+                f"SELECT * FROM ({current_sql.rstrip(';')}) AS _q LIMIT {MAX_ROWS + 1}"
+            )
+            cur.execute(limited_sql)
+            cols = [desc[0] for desc in cur.description]
+            rows = cur.fetchall()
+            truncated = len(rows) > MAX_ROWS
+            rows = rows[:MAX_ROWS]
+            results = [dict(zip(cols, row)) for row in rows]
+            cur.close()
+            conn.close()
 
-        return AskResponse(
-            sql=sql,
-            results=results,
-            display_columns=display_columns,
-            chart_hint=chart_hint,
-            error=None,
-            truncated=truncated,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-        )
+            duration_ms = int((time.time() - start) * 1000)
+            log_query(
+                req.question, current_sql, len(results), None,
+                model_name, input_tokens, output_tokens, duration_ms, ip
+            )
 
-    except Exception as e:
-        duration_ms = int((time.time() - start) * 1000)
-        log_query(req.question, sql, 0, str(e), model_name,
-                  input_tokens, output_tokens, duration_ms, ip)
-        sentry_sdk.capture_exception(e)
-        return AskResponse(
-            sql=sql,
-            results=[],
-            display_columns=[],
-            chart_hint=None,
-            error=str(e),
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-        )
+            return AskResponse(
+                sql=current_sql,
+                results=results,
+                display_columns=current_display_columns,
+                chart_hint=current_chart_hint,
+                error=None,
+                truncated=truncated,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+            )
+
+        except Exception as e:
+            last_error = str(e)
+
+            # Log the failure
+            log_query(
+                req.question, current_sql, 0, last_error,
+                model_name, input_tokens, output_tokens,
+                int((time.time() - start) * 1000), ip
+            )
+
+            if attempt < MAX_RETRIES:
+                # Try to heal
+                healed_sql, healed_cols, healed_hint = heal_query(
+                    client=client,
+                    question=req.question,
+                    schema_context=schema_context,
+                    failed_sql=current_sql,
+                    error=last_error,
+                    attempt=attempt + 1,
+                )
+
+                healed_successfully = healed_sql != current_sql
+                log_retry(
+                    question=req.question,
+                    original_sql=current_sql,
+                    error=last_error,
+                    retry_number=attempt + 1,
+                    healed_sql=healed_sql,
+                    healed_successfully=healed_successfully,
+                )
+
+                current_sql = healed_sql
+                if healed_cols:
+                    current_display_columns = healed_cols
+                if healed_hint:
+                    current_chart_hint = healed_hint
+            else:
+                # All retries exhausted
+                sentry_sdk.capture_exception(e)
+
+    duration_ms = int((time.time() - start) * 1000)
+    return AskResponse(
+        sql=current_sql,
+        results=[],
+        display_columns=[],
+        chart_hint=None,
+        error=f"Query failed after {MAX_RETRIES} retries. Last error: {last_error}",
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+    )
