@@ -125,6 +125,8 @@ type Message = {
   question?: string;
   sql?: string;
   results?: Record<string, unknown>[];
+  display_columns?: string[];
+  chart_hint?: string | null;
   error?: string | null;
   truncated?: boolean;
 };
@@ -193,24 +195,112 @@ function detectChartType(results: Record<string, unknown>[]): ChartType {
   return null;
 }
 
+function detectFormat(
+  col: string,
+): "currency" | "duration_ms" | "date" | "percent" | "number" | "text" {
+  const c = col.toLowerCase();
+  if (/price|total|revenue|spend|cost|amount|salary/.test(c)) return "currency";
+  if (/milliseconds|duration_ms/.test(c)) return "duration_ms";
+  if (/date|time|_at|created|updated|hired/.test(c)) return "date";
+  if (/percent|pct|rate|ratio/.test(c)) return "percent";
+  return "text";
+}
+
+function formatCell(value: unknown, col: string): string {
+  if (value === null || value === undefined || value === "null") return "—";
+  const fmt = detectFormat(col);
+  const raw = String(value);
+
+  if (fmt === "currency") {
+    const num = parseFloat(raw);
+    if (!isNaN(num))
+      return `$${num.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  }
+
+  if (fmt === "duration_ms") {
+    const ms = parseInt(raw);
+    if (!isNaN(ms)) {
+      const mins = Math.floor(ms / 60000);
+      const secs = Math.floor((ms % 60000) / 1000);
+      return `${mins}m ${secs}s`;
+    }
+  }
+
+  if (fmt === "date") {
+    const d = new Date(raw);
+    if (!isNaN(d.getTime())) {
+      return d.toLocaleDateString("en-US", {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+      });
+    }
+  }
+
+  if (fmt === "percent") {
+    const num = parseFloat(raw);
+    if (!isNaN(num)) return `${num.toFixed(1)}%`;
+  }
+
+  const num = parseFloat(raw);
+  if (!isNaN(num) && raw.trim() !== "" && !raw.includes("-")) {
+    if (Number.isInteger(num)) return num.toLocaleString("en-US");
+    return num.toLocaleString("en-US", { maximumFractionDigits: 2 });
+  }
+
+  return raw;
+}
+
 function ResultBlock({
   results,
+  displayColumns,
+  chartHint,
   truncated,
 }: {
   results: Record<string, unknown>[];
+  displayColumns?: string[];
+  chartHint?: string | null;
   truncated?: boolean;
 }) {
   const [showChart, setShowChart] = useState(true);
-  const chartType = detectChartType(results);
-  const isChartable = chartType !== null;
+  const [showAllColumns, setShowAllColumns] = useState(false);
+
+  const allColumns = Object.keys(results[0]);
+
+  // Use LLM-suggested display columns if available, else show all
+  const defaultVisible =
+    displayColumns && displayColumns.length > 0
+      ? allColumns.filter((col) => displayColumns.includes(col))
+      : allColumns;
+
+  const hiddenColumns = allColumns.filter(
+    (col) => !defaultVisible.includes(col),
+  );
+
+  const visibleColumns = showAllColumns ? allColumns : defaultVisible;
+  const hasHiddenColumns = hiddenColumns.length > 0;
+
+  // Map LLM hint to internal chart types
+  function mapChartHint(hint: string | null | undefined): ChartType {
+    if (!hint) return detectChartType(results);
+    if (hint === "bar")
+      return results.length <= 8 ? "bar-vertical" : "bar-horizontal";
+    if (hint === "line") return "line";
+    if (hint === "pie") return "pie";
+    if (hint === "scatter") return "scatter";
+    return detectChartType(results);
+  }
+
+  const resolvedChartType: ChartType = mapChartHint(chartHint);
+  const isChartable = resolvedChartType !== null;
 
   return (
     <div className="space-y-2">
-      {/* Chart toggle bar */}
+      {/* Chart toggle */}
       {isChartable && (
         <div className="flex items-center justify-between px-1">
           <span className="text-xs text-muted-foreground capitalize">
-            {chartType?.replace("-", " ")} chart
+            {resolvedChartType?.replace(/-/g, " ")} chart
           </span>
           <button
             onClick={() => setShowChart((v) => !v)}
@@ -224,27 +314,40 @@ function ResultBlock({
       {/* Chart */}
       {isChartable && showChart && (
         <div className="rounded-lg border bg-background p-3 overflow-x-auto">
-          <SmartChart results={results} />
+          <SmartChart results={results} chartType={resolvedChartType} />
         </div>
       )}
 
       {/* Table */}
       <div className="rounded-lg border overflow-hidden">
-        <div className="px-3 py-1.5 border-b text-xs text-muted-foreground flex justify-between items-center">
-          <span className="uppercase tracking-wider">
+        <div className="px-3 py-1.5 border-b text-xs text-muted-foreground flex justify-between items-center gap-2">
+          <span className="uppercase tracking-wider shrink-0">
             {results.length} row{results.length !== 1 ? "s" : ""}
           </span>
-          {truncated && (
-            <span className="text-yellow-500 font-medium">
-              ⚠ Truncated to 100 rows
-            </span>
-          )}
+          <div className="flex items-center gap-2 flex-wrap justify-end">
+            {truncated && (
+              <span className="text-yellow-500 font-medium">
+                ⚠ Truncated to 100 rows
+              </span>
+            )}
+            {hasHiddenColumns && (
+              <button
+                onClick={() => setShowAllColumns((v) => !v)}
+                className="text-xs px-2.5 py-1 rounded-full border hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
+              >
+                {showAllColumns
+                  ? "Hide extra columns"
+                  : `Show all columns (+${hiddenColumns.length} hidden)`}
+              </button>
+            )}
+          </div>
         </div>
+
         <div className="overflow-x-auto max-h-64">
           <Table>
             <TableHeader>
               <TableRow>
-                {Object.keys(results[0]).map((col) => (
+                {visibleColumns.map((col) => (
                   <TableHead
                     key={col}
                     className="text-xs font-mono whitespace-nowrap"
@@ -257,12 +360,12 @@ function ResultBlock({
             <TableBody>
               {results.map((row, j) => (
                 <TableRow key={j}>
-                  {Object.values(row).map((val, k) => (
+                  {visibleColumns.map((col, k) => (
                     <TableCell
                       key={k}
                       className="text-xs font-mono whitespace-nowrap"
                     >
-                      {String(val)}
+                      {formatCell(row[col], col)}
                     </TableCell>
                   ))}
                 </TableRow>
@@ -275,8 +378,13 @@ function ResultBlock({
   );
 }
 
-function SmartChart({ results }: { results: Record<string, unknown>[] }) {
-  const chartType = detectChartType(results);
+function SmartChart({
+  results,
+  chartType,
+}: {
+  results: Record<string, unknown>[];
+  chartType: ChartType;
+}) {
   if (!chartType) return null;
 
   const keys = Object.keys(results[0]);
@@ -584,6 +692,8 @@ export default function Home() {
           role: "assistant",
           sql: data.sql,
           results: data.results,
+          display_columns: data.display_columns,
+          chart_hint: data.chart_hint,
           error: data.error,
           truncated: data.truncated,
         },
@@ -849,6 +959,8 @@ export default function Home() {
                       {msg.results && msg.results.length > 0 && (
                         <ResultBlock
                           results={msg.results}
+                          displayColumns={msg.display_columns}
+                          chartHint={msg.chart_hint}
                           truncated={msg.truncated}
                         />
                       )}

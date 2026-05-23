@@ -157,6 +157,8 @@ class AskRequest(BaseModel):
 class AskResponse(BaseModel):
     sql: str
     results: list
+    display_columns: list[str] = []
+    chart_hint: str | None = None
     error: str | None = None
     truncated: bool = False
     input_tokens: int = 0
@@ -258,7 +260,7 @@ async def upload_csv(file: UploadFile = File(...)):
 # ── Ask endpoint 
 @app.post("/api/ask", response_model=AskResponse)
 @limiter.limit("10/minute")
-async def ask(req: AskRequest, request: Request):
+async def ask(req: AskRequest, request: Request):   
     start = time.time()
     ip = get_remote_address(request)
     model_name = "claude-sonnet-4-5"
@@ -327,20 +329,48 @@ async def ask(req: AskRequest, request: Request):
         messages=[
             {
                 "role": "user",
-                "content": f"""You are a SQL expert. Given this Postgres schema:
+                "content": f"""You are a SQL expert and a product designer who cares about clean data presentation.
 
-{schema_context}
+                Given this Postgres schema:
+                {schema_context}
 
-Generate a SQL query to answer: {req.question}
+                Generate a SQL query to answer: {req.question}
 
-Return ONLY the SQL query, no explanation, no markdown, no backticks.""",
+                Return a JSON object with exactly these fields:
+                {{
+                "sql": "the complete SQL query",
+                "display_columns": ["col1", "col2"],
+                "chart_hint": "bar" | "line" | "pie" | "scatter" | null
+                }}
+
+                Rules:
+                - "sql": valid Postgres SQL, no markdown, no backticks
+                - "display_columns": only the columns a non-technical human would want to see. Exclude primary keys and foreign keys (columns ending in _id) unless the question specifically asks for them. Always include the columns that directly answer the question.
+                - "chart_hint": suggest a chart type if the result is numeric and visual. Use "line" for time series, "pie" for <= 8 categories, "bar" for > 8 categories or comparisons, "scatter" for two numeric columns, null if not chartable.
+
+                Return ONLY the JSON object. No explanation, no markdown, no backticks.""",
             }
         ],
     )
 
-    sql = message.content[0].text.strip()
+    raw = message.content[0].text.strip()
     input_tokens = message.usage.input_tokens
     output_tokens = message.usage.output_tokens
+
+    # Parse structured output
+    import json
+    try:
+        # Strip markdown fences if model adds them anyway
+        clean = raw.replace("```json", "").replace("```", "").strip()
+        parsed = json.loads(clean)
+        sql = parsed.get("sql", "").strip()
+        display_columns = parsed.get("display_columns", [])
+        chart_hint = parsed.get("chart_hint", None)
+    except Exception:
+        # Fallback: treat entire response as raw SQL
+        sql = raw
+        display_columns = []
+        chart_hint = None
 
     # Safety check
     if not is_select_only(sql):
@@ -351,6 +381,8 @@ Return ONLY the SQL query, no explanation, no markdown, no backticks.""",
         return AskResponse(
             sql=sql,
             results=[],
+            display_columns=[],
+            chart_hint=None,
             error="Only read queries allowed. The model generated a non-SELECT statement.",
             input_tokens=input_tokens,
             output_tokens=output_tokens,
@@ -380,6 +412,8 @@ Return ONLY the SQL query, no explanation, no markdown, no backticks.""",
         return AskResponse(
             sql=sql,
             results=results,
+            display_columns=display_columns,
+            chart_hint=chart_hint,
             error=None,
             truncated=truncated,
             input_tokens=input_tokens,
@@ -394,6 +428,8 @@ Return ONLY the SQL query, no explanation, no markdown, no backticks.""",
         return AskResponse(
             sql=sql,
             results=[],
+            display_columns=[],
+            chart_hint=None,
             error=str(e),
             input_tokens=input_tokens,
             output_tokens=output_tokens,
