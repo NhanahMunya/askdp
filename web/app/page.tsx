@@ -671,10 +671,29 @@ export default function Home() {
   async function handleAsk(q?: string) {
     const text = q ?? question;
     if (!text.trim() || loading) return;
-    setMessages((prev) => [...prev, { role: "user", question: text }]);
+
+    const userMessage: Message = { role: "user", question: text };
+    setMessages((prev) => [...prev, userMessage]);
     setQuestion("");
     setLoading(true);
     setSchemaOpen(false);
+
+    // Build history from last 4 assistant exchanges
+    const history = messages
+      .reduce<{ question: string; sql: string }[]>((acc, msg, i, arr) => {
+        if (
+          msg.role === "user" &&
+          arr[i + 1]?.role === "assistant" &&
+          arr[i + 1]?.sql
+        ) {
+          acc.push({
+            question: msg.question ?? "",
+            sql: arr[i + 1].sql ?? "",
+          });
+        }
+        return acc;
+      }, [])
+      .slice(-4);
 
     try {
       const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/ask`, {
@@ -683,6 +702,7 @@ export default function Home() {
         body: JSON.stringify({
           question: text,
           session_id: session?.session_id ?? null,
+          history,
         }),
       });
       const data = await res.json();

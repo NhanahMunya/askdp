@@ -237,9 +237,14 @@ def heal_query(
         return raw.strip(), [], None
 
 # ── Models ────────────────────────────────────────────────────────────────────
+class HistoryEntry(BaseModel):
+    question: str
+    sql: str
+
 class AskRequest(BaseModel):
     question: str
     session_id: str | None = None
+    history: list[HistoryEntry] = []
 
 
 class AskResponse(BaseModel):
@@ -411,34 +416,50 @@ async def ask(req: AskRequest, request: Request):
 
     # Ask Claude
     client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+    # Build multi-turn message history
+    history_messages = []
+    for entry in req.history[-4:]:  # last 4 exchanges
+        history_messages.append({
+            "role": "user",
+            "content": entry.question
+        })
+        history_messages.append({
+            "role": "assistant",
+            "content": f'{{"sql": "{entry.sql}", "display_columns": [], "chart_hint": null}}'
+        })
+
+    # Add current question
+    history_messages.append({
+        "role": "user",
+        "content": f"""You are a SQL expert and a product designer who cares about clean data presentation.
+
+        Given this Postgres schema:
+        {schema_context}
+
+        Generate a SQL query to answer: {req.question}
+
+        Return a JSON object with exactly these fields:
+        {{
+        "sql": "the complete SQL query",
+        "display_columns": ["col1", "col2"],
+        "chart_hint": "bar" | "line" | "pie" | "scatter" | null
+        }}
+
+        Rules:
+        - "sql": valid Postgres SQL, no markdown, no backticks
+        - "display_columns": only the columns a non-technical human would want to see. Exclude primary keys and foreign keys (columns ending in _id) unless the question specifically asks for them. Always include the columns that directly answer the question.
+        - "chart_hint": suggest a chart type if the result is numeric and visual. Use "line" for time series, "pie" for <= 8 categories, "bar" for > 8 categories or comparisons, "scatter" for two numeric columns, null if not chartable.
+
+        Use the conversation history above to understand context — if the user says "now break that down by month" or "show me more of those", refer to the previous question and SQL to understand what they mean.
+
+        Return ONLY the JSON object. No explanation, no markdown, no backticks."""
+    })
+
     message = client.messages.create(
         model=model_name,
         max_tokens=1024,
-        messages=[
-            {
-                "role": "user",
-                "content": f"""You are a SQL expert and a product designer who cares about clean data presentation.
-
-                Given this Postgres schema:
-                {schema_context}
-
-                Generate a SQL query to answer: {req.question}
-
-                Return a JSON object with exactly these fields:
-                {{
-                "sql": "the complete SQL query",
-                "display_columns": ["col1", "col2"],
-                "chart_hint": "bar" | "line" | "pie" | "scatter" | null
-                }}
-
-                Rules:
-                - "sql": valid Postgres SQL, no markdown, no backticks
-                - "display_columns": only the columns a non-technical human would want to see. Exclude primary keys and foreign keys (columns ending in _id) unless the question specifically asks for them. Always include the columns that directly answer the question.
-                - "chart_hint": suggest a chart type if the result is numeric and visual. Use "line" for time series, "pie" for <= 8 categories, "bar" for > 8 categories or comparisons, "scatter" for two numeric columns, null if not chartable.
-
-                Return ONLY the JSON object. No explanation, no markdown, no backticks.""",
-            }
-        ],
+        system="You are a SQL expert with memory of the current conversation. Use prior questions and SQL to understand follow-up questions.",
+        messages=history_messages,
     )
 
     raw = message.content[0].text.strip()
