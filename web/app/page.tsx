@@ -398,7 +398,7 @@ function SmartChart({
             textAnchor="end"
           />
           <YAxis tick={{ fontSize: 11 }} tickFormatter={formatValue} />
-          <Tooltip formatter={(v: number) => formatValue(v)} />
+          <Tooltip formatter={(v) => formatValue(Number(v))} />
           <Line
             type="monotone"
             dataKey={valueKey}
@@ -431,7 +431,7 @@ function SmartChart({
               <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
             ))}
           </Pie>
-          <Tooltip formatter={(v: number) => formatValue(v)} />
+          <Tooltip formatter={(v) => formatValue(Number(v))} />
         </PieChart>
       </ResponsiveContainer>
     );
@@ -463,7 +463,7 @@ function SmartChart({
             tick={{ fontSize: 11 }}
             width={120}
           />
-          <Tooltip formatter={(v: number) => formatValue(v)} />
+          <Tooltip formatter={(v) => formatValue(Number(v))} />
           <Bar dataKey={valueKey} radius={[0, 6, 6, 0]}>
             {data.map((_, i) => (
               <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
@@ -492,7 +492,7 @@ function SmartChart({
             textAnchor="end"
           />
           <YAxis tick={{ fontSize: 11 }} tickFormatter={formatValue} />
-          <Tooltip formatter={(v: number) => formatValue(v)} />
+          <Tooltip formatter={(v) => formatValue(Number(v))} />
           <Bar dataKey={valueKey} radius={[6, 6, 0, 0]}>
             {data.map((_, i) => (
               <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
@@ -552,7 +552,7 @@ function SmartChart({
             textAnchor="end"
           />
           <YAxis tick={{ fontSize: 11 }} tickFormatter={formatValue} />
-          <Tooltip formatter={(v: number) => formatValue(v)} />
+          <Tooltip formatter={(v) => formatValue(Number(v))} />
           <Legend />
           {numCols.map((col, i) => (
             <Bar
