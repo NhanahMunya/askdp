@@ -1,8 +1,9 @@
 import time
 import os
 import uuid
+import json
 import sentry_sdk
-from fastapi import FastAPI, Request, UploadFile, File
+from fastapi import FastAPI, Request, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import anthropic
@@ -76,6 +77,7 @@ CREATE TABLE playlist_track (playlist_id INT REFERENCES playlist, track_id INT R
 
 MAX_ROWS = 100
 STATEMENT_TIMEOUT_MS = 5000
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB cap on uploaded CSVs
 
 
 # ── Pandas dtype → Postgres type mapping ─────────────────────────────────────
@@ -185,7 +187,6 @@ def heal_query(
     attempt: int,
 ) -> tuple[str, list[str], str | None]:
     """Ask Claude to fix a failed SQL query. Returns (sql, display_columns, chart_hint)."""
-    import json
 
     message = client.messages.create(
         model="claude-sonnet-4-5",
@@ -271,6 +272,17 @@ class UploadResponse(BaseModel):
 async def upload_csv(file: UploadFile = File(...)):
     # Read CSV
     contents = await file.read()
+
+    # Size guard
+    if len(contents) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"File too large. Limit is {MAX_UPLOAD_BYTES // (1024 * 1024)} MB; "
+                f"got {len(contents) // (1024 * 1024)} MB."
+            ),
+        )
+
     df = pd.read_csv(StringIO(contents.decode("utf-8")))
 
     # Sanitize column names
@@ -425,7 +437,11 @@ async def ask(req: AskRequest, request: Request):
         })
         history_messages.append({
             "role": "assistant",
-            "content": f'{{"sql": "{entry.sql}", "display_columns": [], "chart_hint": null}}'
+            "content": json.dumps({
+                "sql": entry.sql,
+                "display_columns": [],
+                "chart_hint": None,
+            })
         })
 
     # Add current question
@@ -467,7 +483,6 @@ async def ask(req: AskRequest, request: Request):
     output_tokens = message.usage.output_tokens
 
     # Parse structured output
-    import json
     try:
         # Strip markdown fences if model adds them anyway
         clean = raw.replace("```json", "").replace("```", "").strip()

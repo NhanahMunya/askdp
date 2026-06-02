@@ -1,21 +1,30 @@
 # AskDB
 
-> Natural language to SQL, powered by Claude AI (API). Ask questions about a music store in plain English — get real data back instantly.
+> Natural language to SQL, powered by Claude AI. Upload any CSV or query the demo music store — ask questions in plain English, get real data back instantly.
 
-**[Live Demo](https://askdp.vercel.app)** · Phase 1 of 4
+**[Live Demo](https://askdp.vercel.app)** · Phase 2 of 4
 
 ---
 
 ## What it does
 
-Type a question like _"Which genre is most popular in Germany?"_ and AskDB:
+Upload a CSV or use the built-in Chinook music store. Type a question like _"Which product generated the most revenue in Asia?"_ and AskDB:
 
-1. Sends it to Claude with the full database schema as context via api
-2. Gets back a SQL query
-3. Executes it against a real Postgres database
-4. Returns the results as a table
+1. Reads your live schema (introspected from Postgres, not hardcoded)
+2. Sends the question + schema + recent conversation history to Claude
+3. Receives back structured JSON: SQL query, suggested display columns, and a chart hint
+4. Executes the SQL in a sandboxed read-only context, retrying with self-healing if it fails
+5. Returns clean results — hiding primary keys and other noise unless you ask for them
 
-No SQL knowledge required.
+No SQL knowledge required. Follow-up questions work: _"now break that down by month."_
+
+## What's new in Phase 2
+
+- **CSV upload + dynamic schema introspection.** Upload any CSV; it gets a session-scoped Postgres schema and the model queries it via live `information_schema` lookups — no hardcoded schemas.
+- **Strategy C result presentation.** Single structured-output LLM call returns SQL + display columns + chart hint together. Resolved 6 of 7 Phase 1 partials by suppressing primary keys and other noise from output without adding latency.
+- **Self-healing queries.** Failed SQL is automatically retried with the error fed back to Claude (up to 2 attempts). All retries logged to `query_retry_log` for analysis.
+- **Conversation memory.** Last 4 exchanges sent as multi-turn history so follow-ups like _"break that down by month"_ resolve against prior context.
+- **Headline eval result:** **100% pass rate (15/15)** on a CSV the model had never seen. Chinook regression rose from 53% strict accuracy in Phase 1 to **93%** in Phase 2. See [EVAL_PHASE_2.md](EVAL_PHASE_2.md) for full details.
 
 ---
 
@@ -86,29 +95,42 @@ Create `askdp/web/.env.local`:
 
 ## Known Limitations
 
-These are real - not excuses, just honest engineering notes:
+These are real — not excuses, just honest engineering notes:
 
-- **No query memory** — each question is stateless. "Show me more of those" doesn't work.
-- **Schema is hardcoded** — the Chinook schema is pasted as a string in the backend. Dynamic schema introspection is Phase 2.
-- **Claude sometimes hallucinates column names** — especially on ambiguous questions. The error is shown clearly but not auto-corrected.
+- **Business-logic ambiguity remains** — fuzzy terms like "most popular" are interpreted silently. The model picks one definition (e.g. `COUNT` vs `SUM`) without surfacing the choice. Phase 3 work.
+- **Auto-charts not yet rendered** — the backend returns a `chart_hint` per query, but the frontend still defaults to a table view. Chart rendering is next.
 - **No auth** — anyone with the URL can query. Rate limiting (10/min per IP) is the only guard.
-- **Neon cold starts** — first query after inactivity can be slow (~2-3s).
-- **Aggregate queries only return one row** — the row limit wrapper works correctly but can confuse users expecting a single number without a table.
+- **CSV inserts are row-by-row** — uploads >5,000 rows will be slow. `executemany` / `COPY` planned.
+- **Date types in CSV upload aren't inferred** — dates land as TEXT and the model has to wrap in `TO_DATE(...)`. Works, but adds latency on date-math questions.
+- **Neon cold starts** — first query after inactivity can be slow (~2–3s).
+- **Tested mainly on schemas in-distribution for the model** — a truly adversarial schema test (domain-specific data the model has never seen) is still pending.
 
 ---
 
-## What's coming (Phase 2)
+## What's coming (Phase 3)
 
-- [ ] Dynamic schema introspection — works on any Postgres database
-- [ ] Query history per session
-- [ ] Chart rendering for numeric results
-- [ ] Self-healing queries — retry with error context when SQL fails
+- [ ] Auto-chart rendering in the UI (using the `chart_hint` already returned by the backend)
+- [ ] Semantic layer / clarification step for business-logic ambiguity ("popular," "top," "active")
+- [ ] Auth + per-user query history
+- [ ] Faster CSV ingest (batch INSERT or COPY)
+- [ ] Latency optimisation for date-heavy queries
+
+---
+
+## Phase 2 checklist (shipped)
+
+- [x] Dynamic schema introspection — works on any uploaded CSV via session-scoped Postgres schemas
+- [x] Conversation memory — last 4 exchanges sent as multi-turn history
+- [x] Self-healing queries — retry with error context when SQL fails (up to 2 attempts)
+- [x] Result presentation layer (Strategy C) — structured LLM output suppresses primary keys and other noise
+- [x] Eval on a CSV the model has never seen — 15/15 (100%) on uploaded online sales data
+- [ ] Chart rendering for numeric results — backend hint shipped, frontend rendering pending
 
 ---
 
 ## Query Log
 
-Every question asked is logged to Postgres with: question, generated SQL, result count, token usage, and duration. This powers the eval set for Phase 2 improvements.
+Every question asked is logged to Postgres with: question, generated SQL, result count, token usage, and duration. Failed queries and self-healing retries are logged separately to `query_retry_log`. This powers the eval sets and ongoing improvement work.
 
 ---
 

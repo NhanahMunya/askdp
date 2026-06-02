@@ -139,8 +139,6 @@ type SessionInfo = {
   column_count: number;
 };
 
-//Chart logic
-
 const CHART_COLORS = [
   "#6366f1",
   "#22c55e",
@@ -163,35 +161,22 @@ type ChartType =
 
 function detectChartType(results: Record<string, unknown>[]): ChartType {
   if (!results || results.length === 0) return null;
-
   const keys = Object.keys(results[0]);
   if (keys.length < 2) return null;
-
   const isNumeric = (key: string) =>
     results.every((r) => r[key] === null || !isNaN(Number(r[key])));
-
   const isTimeKey = (key: string) =>
     /month|date|year|day|week|quarter/i.test(key);
-
   const textCols = keys.filter((k) => !isNumeric(k));
   const numCols = keys.filter((k) => isNumeric(k));
-
-  // All numeric → scatter
   if (textCols.length === 0 && numCols.length === 2) return "scatter";
-
-  // 1 text + 1 numeric
   if (textCols.length === 1 && numCols.length === 1) {
     if (isTimeKey(textCols[0])) return "line";
     if (results.length <= 8) return "pie";
     return "bar-horizontal";
   }
-
-  // 1 text + multiple numeric → grouped bar
   if (textCols.length === 1 && numCols.length > 1) return "grouped-bar";
-
-  // 2 numeric columns
   if (numCols.length === 2 && textCols.length === 0) return "scatter";
-
   return null;
 }
 
@@ -199,7 +184,12 @@ function detectFormat(
   col: string,
 ): "currency" | "duration_ms" | "date" | "percent" | "number" | "text" {
   const c = col.toLowerCase();
-  if (/price|total|revenue|spend|cost|amount|salary/.test(c)) return "currency";
+  if (
+    /^price$|_price$|^total$|_total$|^revenue$|_revenue$|^spend$|_spend$|^cost$|_cost$|^amount$|_amount$|^salary$|_salary$/.test(
+      c,
+    )
+  )
+    return "currency";
   if (/milliseconds|duration_ms/.test(c)) return "duration_ms";
   if (/date|time|_at|created|updated|hired/.test(c)) return "date";
   if (/percent|pct|rate|ratio/.test(c)) return "percent";
@@ -210,13 +200,11 @@ function formatCell(value: unknown, col: string): string {
   if (value === null || value === undefined || value === "null") return "—";
   const fmt = detectFormat(col);
   const raw = String(value);
-
   if (fmt === "currency") {
     const num = parseFloat(raw);
     if (!isNaN(num))
       return `$${num.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   }
-
   if (fmt === "duration_ms") {
     const ms = parseInt(raw);
     if (!isNaN(ms)) {
@@ -225,7 +213,6 @@ function formatCell(value: unknown, col: string): string {
       return `${mins}m ${secs}s`;
     }
   }
-
   if (fmt === "date") {
     const d = new Date(raw);
     if (!isNaN(d.getTime())) {
@@ -236,18 +223,15 @@ function formatCell(value: unknown, col: string): string {
       });
     }
   }
-
   if (fmt === "percent") {
     const num = parseFloat(raw);
     if (!isNaN(num)) return `${num.toFixed(1)}%`;
   }
-
   const num = parseFloat(raw);
   if (!isNaN(num) && raw.trim() !== "" && !raw.includes("-")) {
     if (Number.isInteger(num)) return num.toLocaleString("en-US");
     return num.toLocaleString("en-US", { maximumFractionDigits: 2 });
   }
-
   return raw;
 }
 
@@ -266,21 +250,16 @@ function ResultBlock({
   const [showAllColumns, setShowAllColumns] = useState(false);
 
   const allColumns = Object.keys(results[0]);
-
-  // Use LLM-suggested display columns if available, else show all
   const defaultVisible =
     displayColumns && displayColumns.length > 0
       ? allColumns.filter((col) => displayColumns.includes(col))
       : allColumns;
-
   const hiddenColumns = allColumns.filter(
     (col) => !defaultVisible.includes(col),
   );
-
   const visibleColumns = showAllColumns ? allColumns : defaultVisible;
   const hasHiddenColumns = hiddenColumns.length > 0;
 
-  // Map LLM hint to internal chart types
   function mapChartHint(hint: string | null | undefined): ChartType {
     if (!hint) return detectChartType(results);
     if (hint === "bar")
@@ -296,48 +275,45 @@ function ResultBlock({
 
   return (
     <div className="space-y-2">
-      {/* Chart toggle */}
       {isChartable && (
         <div className="flex items-center justify-between px-1">
-          <span className="text-xs text-muted-foreground capitalize">
+          <span className="text-xs text-muted-foreground capitalize font-medium tracking-wide">
             {resolvedChartType?.replace(/-/g, " ")} chart
           </span>
           <button
             onClick={() => setShowChart((v) => !v)}
-            className="text-xs px-2.5 py-1 rounded-full border hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
+            className="text-xs px-3 py-1 rounded-full border border-border/60 hover:bg-muted/80 transition-all text-muted-foreground hover:text-foreground"
           >
             {showChart ? "Hide chart" : "Show chart"}
           </button>
         </div>
       )}
 
-      {/* Chart */}
       {isChartable && showChart && (
-        <div className="rounded-lg border bg-background p-3 overflow-x-auto">
+        <div className="rounded-xl border border-border/60 bg-background/50 p-4 overflow-x-auto shadow-sm">
           <SmartChart results={results} chartType={resolvedChartType} />
         </div>
       )}
 
-      {/* Table */}
-      <div className="rounded-lg border overflow-hidden">
-        <div className="px-3 py-1.5 border-b text-xs text-muted-foreground flex justify-between items-center gap-2">
-          <span className="uppercase tracking-wider shrink-0">
-            {results.length} row{results.length !== 1 ? "s" : ""}
+      <div className="rounded-xl border border-border/60 overflow-hidden shadow-sm">
+        <div className="px-4 py-2 border-b border-border/60 bg-muted/30 text-xs text-muted-foreground flex justify-between items-center gap-2">
+          <span className="font-semibold uppercase tracking-widest text-[10px]">
+            {results.length} {results.length !== 1 ? "rows" : "row"}
           </span>
           <div className="flex items-center gap-2 flex-wrap justify-end">
             {truncated && (
-              <span className="text-yellow-500 font-medium">
-                ⚠ Truncated to 100 rows
+              <span className="text-amber-500 font-medium flex items-center gap-1">
+                <span>⚠</span> Truncated to 100 rows
               </span>
             )}
             {hasHiddenColumns && (
               <button
                 onClick={() => setShowAllColumns((v) => !v)}
-                className="text-xs px-2.5 py-1 rounded-full border hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
+                className="text-xs px-3 py-0.5 rounded-full border border-border/60 hover:bg-muted/80 transition-all text-muted-foreground hover:text-foreground"
               >
                 {showAllColumns
                   ? "Hide extra columns"
-                  : `Show all columns (+${hiddenColumns.length} hidden)`}
+                  : `+${hiddenColumns.length} hidden`}
               </button>
             )}
           </div>
@@ -346,11 +322,11 @@ function ResultBlock({
         <div className="overflow-x-auto max-h-64">
           <Table>
             <TableHeader>
-              <TableRow>
+              <TableRow className="bg-muted/20 hover:bg-muted/20">
                 {visibleColumns.map((col) => (
                   <TableHead
                     key={col}
-                    className="text-xs font-mono whitespace-nowrap"
+                    className="text-[11px] font-semibold font-mono uppercase tracking-wider text-muted-foreground whitespace-nowrap py-2"
                   >
                     {col}
                   </TableHead>
@@ -359,11 +335,14 @@ function ResultBlock({
             </TableHeader>
             <TableBody>
               {results.map((row, j) => (
-                <TableRow key={j}>
+                <TableRow
+                  key={j}
+                  className={j % 2 === 0 ? "bg-background" : "bg-muted/10"}
+                >
                   {visibleColumns.map((col, k) => (
                     <TableCell
                       key={k}
-                      className="text-xs font-mono whitespace-nowrap"
+                      className="text-xs font-mono whitespace-nowrap py-2"
                     >
                       {formatCell(row[col], col)}
                     </TableCell>
@@ -386,22 +365,14 @@ function SmartChart({
   chartType: ChartType;
 }) {
   if (!chartType) return null;
-
   const keys = Object.keys(results[0]);
   const isNumeric = (key: string) =>
     results.every((r) => r[key] === null || !isNaN(Number(r[key])));
-
   const textCols = keys.filter((k) => !isNumeric(k));
   const numCols = keys.filter((k) => isNumeric(k));
-
   const labelKey = textCols[0] ?? keys[0];
   const valueKey = numCols[0] ?? keys[1];
-
-  const data = results.map((r) => ({
-    ...r,
-    [valueKey]: Number(r[valueKey]),
-  }));
-
+  const data = results.map((r) => ({ ...r, [valueKey]: Number(r[valueKey]) }));
   const formatValue = (v: number) => {
     if (v >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
     if (v >= 1_000) return `${(v / 1_000).toFixed(1)}k`;
@@ -410,12 +381,16 @@ function SmartChart({
 
   if (chartType === "line") {
     return (
-      <ResponsiveContainer width="100%" height={260}>
+      <ResponsiveContainer width="100%" height={240}>
         <LineChart
           data={data}
           margin={{ top: 8, right: 16, left: 0, bottom: 40 }}
         >
-          <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
+          <CartesianGrid
+            strokeDasharray="3 3"
+            stroke="hsl(var(--border))"
+            opacity={0.5}
+          />
           <XAxis
             dataKey={labelKey}
             tick={{ fontSize: 11 }}
@@ -428,18 +403,17 @@ function SmartChart({
             type="monotone"
             dataKey={valueKey}
             stroke={CHART_COLORS[0]}
-            strokeWidth={2}
-            dot={{ r: 3 }}
+            strokeWidth={2.5}
+            dot={{ r: 3, fill: CHART_COLORS[0] }}
             activeDot={{ r: 5 }}
           />
         </LineChart>
       </ResponsiveContainer>
     );
   }
-
   if (chartType === "pie") {
     return (
-      <ResponsiveContainer width="100%" height={260}>
+      <ResponsiveContainer width="100%" height={240}>
         <PieChart>
           <Pie
             data={data}
@@ -451,7 +425,7 @@ function SmartChart({
             label={({ name, percent }) =>
               `${name} ${(percent * 100).toFixed(0)}%`
             }
-            labelLine={true}
+            labelLine
           >
             {data.map((_, i) => (
               <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
@@ -462,19 +436,22 @@ function SmartChart({
       </ResponsiveContainer>
     );
   }
-
   if (chartType === "bar-horizontal") {
     return (
       <ResponsiveContainer
         width="100%"
-        height={Math.max(260, results.length * 36)}
+        height={Math.max(240, results.length * 36)}
       >
         <BarChart
           data={data}
           layout="vertical"
           margin={{ top: 8, right: 32, left: 8, bottom: 8 }}
         >
-          <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
+          <CartesianGrid
+            strokeDasharray="3 3"
+            stroke="hsl(var(--border))"
+            opacity={0.5}
+          />
           <XAxis
             type="number"
             tick={{ fontSize: 11 }}
@@ -487,7 +464,7 @@ function SmartChart({
             width={120}
           />
           <Tooltip formatter={(v: number) => formatValue(v)} />
-          <Bar dataKey={valueKey} fill={CHART_COLORS[0]} radius={[0, 4, 4, 0]}>
+          <Bar dataKey={valueKey} radius={[0, 6, 6, 0]}>
             {data.map((_, i) => (
               <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
             ))}
@@ -496,15 +473,18 @@ function SmartChart({
       </ResponsiveContainer>
     );
   }
-
   if (chartType === "bar-vertical") {
     return (
-      <ResponsiveContainer width="100%" height={260}>
+      <ResponsiveContainer width="100%" height={240}>
         <BarChart
           data={data}
           margin={{ top: 8, right: 16, left: 0, bottom: 40 }}
         >
-          <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
+          <CartesianGrid
+            strokeDasharray="3 3"
+            stroke="hsl(var(--border))"
+            opacity={0.5}
+          />
           <XAxis
             dataKey={labelKey}
             tick={{ fontSize: 11 }}
@@ -513,7 +493,7 @@ function SmartChart({
           />
           <YAxis tick={{ fontSize: 11 }} tickFormatter={formatValue} />
           <Tooltip formatter={(v: number) => formatValue(v)} />
-          <Bar dataKey={valueKey} radius={[4, 4, 0, 0]}>
+          <Bar dataKey={valueKey} radius={[6, 6, 0, 0]}>
             {data.map((_, i) => (
               <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
             ))}
@@ -522,14 +502,17 @@ function SmartChart({
       </ResponsiveContainer>
     );
   }
-
   if (chartType === "scatter") {
     const xKey = numCols[0];
     const yKey = numCols[1];
     return (
-      <ResponsiveContainer width="100%" height={260}>
+      <ResponsiveContainer width="100%" height={240}>
         <ScatterChart margin={{ top: 8, right: 16, left: 0, bottom: 8 }}>
-          <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
+          <CartesianGrid
+            strokeDasharray="3 3"
+            stroke="hsl(var(--border))"
+            opacity={0.5}
+          />
           <XAxis
             dataKey={xKey}
             type="number"
@@ -550,15 +533,18 @@ function SmartChart({
       </ResponsiveContainer>
     );
   }
-
   if (chartType === "grouped-bar") {
     return (
-      <ResponsiveContainer width="100%" height={280}>
+      <ResponsiveContainer width="100%" height={260}>
         <BarChart
           data={data}
           margin={{ top: 8, right: 16, left: 0, bottom: 40 }}
         >
-          <CartesianGrid strokeDasharray="3 3" className="stroke-border" />
+          <CartesianGrid
+            strokeDasharray="3 3"
+            stroke="hsl(var(--border))"
+            opacity={0.5}
+          />
           <XAxis
             dataKey={labelKey}
             tick={{ fontSize: 11 }}
@@ -580,7 +566,6 @@ function SmartChart({
       </ResponsiveContainer>
     );
   }
-
   return null;
 }
 
@@ -594,26 +579,34 @@ function CopyButton({ text }: { text: string }) {
   return (
     <button
       onClick={handleCopy}
-      className="text-xs text-muted-foreground hover:text-foreground transition-colors px-2 py-0.5 rounded hover:bg-muted"
+      className="text-xs px-2.5 py-1 rounded-md bg-white/10 hover:bg-white/20 transition-all text-zinc-400 hover:text-zinc-200 font-mono"
     >
-      {copied ? "✓ Copied" : "Copy SQL"}
+      {copied ? "✓ copied" : "copy"}
     </button>
   );
 }
 
 function LoadingMessage() {
-  const [dots, setDots] = useState(".");
+  const [dots, setDots] = useState(1);
   useEffect(() => {
-    const interval = setInterval(() => {
-      setDots((d) => (d.length >= 3 ? "." : d + "."));
-    }, 400);
+    const interval = setInterval(() => setDots((d) => (d % 3) + 1), 400);
     return () => clearInterval(interval);
   }, []);
   return (
-    <div className="space-y-2 max-w-3xl">
-      <div className="rounded-lg border bg-muted px-4 py-3 text-sm text-muted-foreground flex items-center gap-2">
-        <span className="inline-block w-4 text-center">{dots}</span>
-        <span>Generating SQL and running query</span>
+    <div className="flex items-start gap-3 max-w-3xl">
+      <div className="w-7 h-7 rounded-full bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center shrink-0 mt-0.5 shadow-md">
+        <span className="text-white text-xs font-bold">AI</span>
+      </div>
+      <div className="rounded-2xl rounded-tl-sm border border-border/60 bg-muted/30 px-4 py-3 text-sm text-muted-foreground flex items-center gap-2 shadow-sm">
+        <span className="flex gap-0.5">
+          {[1, 2, 3].map((d) => (
+            <span
+              key={d}
+              className={`w-1.5 h-1.5 rounded-full transition-all duration-300 ${dots >= d ? "bg-indigo-400" : "bg-muted-foreground/30"}`}
+            />
+          ))}
+        </span>
+        <span className="text-xs">Generating SQL and running query</span>
       </div>
     </div>
   );
@@ -633,20 +626,17 @@ export default function Home() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
 
-  // Active schema display — CSV or Chinook
   const activeSchema = session ? session.schema_string : CHINOOK_SCHEMA;
   const activeLabel = session
-    ? `${session.table_name} (${session.row_count} rows, ${session.column_count} cols)`
-    : "Chinook (default)";
+    ? `${session.table_name} · ${session.row_count} rows`
+    : "Chinook · default";
 
   async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
     setUploading(true);
-
     const formData = new FormData();
     formData.append("file", file);
-
     try {
       const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/upload`, {
         method: "POST",
@@ -671,14 +661,11 @@ export default function Home() {
   async function handleAsk(q?: string) {
     const text = q ?? question;
     if (!text.trim() || loading) return;
-
-    const userMessage: Message = { role: "user", question: text };
-    setMessages((prev) => [...prev, userMessage]);
+    setMessages((prev) => [...prev, { role: "user", question: text }]);
     setQuestion("");
     setLoading(true);
     setSchemaOpen(false);
 
-    // Build history from last 4 assistant exchanges
     const history = messages
       .reduce<{ question: string; sql: string }[]>((acc, msg, i, arr) => {
         if (
@@ -686,10 +673,7 @@ export default function Home() {
           arr[i + 1]?.role === "assistant" &&
           arr[i + 1]?.sql
         ) {
-          acc.push({
-            question: msg.question ?? "",
-            sql: arr[i + 1].sql ?? "",
-          });
+          acc.push({ question: msg.question ?? "", sql: arr[i + 1].sql ?? "" });
         }
         return acc;
       }, [])
@@ -736,54 +720,73 @@ export default function Home() {
       {/* Mobile overlay */}
       {schemaOpen && (
         <div
-          className="fixed inset-0 bg-black/50 z-20 md:hidden"
+          className="fixed inset-0 bg-black/60 z-20 md:hidden backdrop-blur-sm"
           onClick={() => setSchemaOpen(false)}
         />
       )}
 
-      {/* Schema Sidebar */}
+      {/* ── Sidebar ── */}
       <aside
         className={`
-          fixed md:static inset-y-0 left-0 z-30
-          w-72 md:w-80 border-r flex flex-col bg-background
-          transform transition-transform duration-300 ease-in-out
-          ${schemaOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0"}
-        `}
+        fixed md:static inset-y-0 left-0 z-30
+        w-72 md:w-76 border-r border-border/60 flex flex-col bg-background
+        transform transition-transform duration-300 ease-in-out
+        ${schemaOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0"}
+      `}
       >
-        {/* Sidebar header */}
-        <div className="p-4 border-b flex items-center justify-between shrink-0">
-          <div>
-            <h2 className="font-semibold text-sm uppercase tracking-wider text-muted-foreground">
+        {/* Sidebar top */}
+        <div className="p-4 border-b border-border/60 flex items-start justify-between shrink-0">
+          <div className="space-y-0.5">
+            <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-muted-foreground">
               Schema
-            </h2>
-            <p className="text-xs text-muted-foreground mt-0.5 truncate max-w-[180px]">
+            </p>
+            <p className="text-xs text-foreground/70 font-mono truncate max-w-[190px]">
               {activeLabel}
             </p>
           </div>
           <button
-            className="md:hidden text-muted-foreground hover:text-foreground text-lg leading-none"
+            className="md:hidden text-muted-foreground hover:text-foreground transition-colors"
             onClick={() => setSchemaOpen(false)}
           >
-            ✕
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.5"
+            >
+              <path d="M18 6L6 18M6 6l12 12" />
+            </svg>
           </button>
         </div>
 
-        {/* Upload / Clear controls */}
-        <div className="p-3 border-b space-y-2 shrink-0">
+        {/* Upload controls */}
+        <div className="p-3 border-b border-border/60 space-y-2 shrink-0">
           {!session ? (
             <>
-              <p className="text-xs text-muted-foreground">
+              <p className="text-[11px] text-muted-foreground leading-relaxed">
                 Upload a CSV to query your own data. Chinook is used by default.
               </p>
-              <Button
-                variant="outline"
-                size="sm"
-                className="w-full text-xs"
+              <button
                 disabled={uploading}
                 onClick={() => fileInputRef.current?.click()}
+                className="w-full flex items-center justify-center gap-2 text-xs py-2 rounded-lg border border-dashed border-border hover:border-indigo-400/60 hover:bg-indigo-500/5 transition-all text-muted-foreground hover:text-indigo-400 disabled:opacity-50"
               >
-                {uploading ? "Uploading..." : "⬆ Upload CSV"}
-              </Button>
+                <svg
+                  width="13"
+                  height="13"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.5"
+                >
+                  <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
+                  <polyline points="17 8 12 3 7 8" />
+                  <line x1="12" y1="3" x2="12" y2="15" />
+                </svg>
+                {uploading ? "Uploading…" : "Upload CSV"}
+              </button>
               <input
                 ref={fileInputRef}
                 type="file"
@@ -794,133 +797,212 @@ export default function Home() {
             </>
           ) : (
             <>
-              <div className="rounded-md bg-green-500/10 border border-green-500/20 px-3 py-2">
-                <p className="text-xs text-green-600 font-medium">
-                  ✓ CSV loaded
-                </p>
-                <p className="text-xs text-muted-foreground mt-0.5 truncate">
-                  {session.table_name}
-                </p>
+              <div className="rounded-lg bg-emerald-500/10 border border-emerald-500/20 px-3 py-2.5 flex items-center gap-2">
+                <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
+                <div className="min-w-0">
+                  <p className="text-[11px] text-emerald-600 dark:text-emerald-400 font-semibold">
+                    CSV loaded
+                  </p>
+                  <p className="text-[11px] text-muted-foreground truncate">
+                    {session.table_name}
+                  </p>
+                </div>
               </div>
-              <Button
-                variant="outline"
-                size="sm"
-                className="w-full text-xs"
+              <button
                 onClick={handleClearSession}
+                className="w-full flex items-center justify-center gap-2 text-xs py-1.5 rounded-lg border border-border/60 hover:bg-muted/60 transition-all text-muted-foreground hover:text-foreground"
               >
-                ✕ Clear — switch to Chinook
-              </Button>
+                <svg
+                  width="12"
+                  height="12"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.5"
+                >
+                  <path d="M18 6L6 18M6 6l12 12" />
+                </svg>
+                Clear — switch to Chinook
+              </button>
             </>
           )}
         </div>
 
-        {/* Schema display */}
-        <pre className="p-4 text-xs overflow-auto flex-1 leading-relaxed text-muted-foreground whitespace-pre-wrap">
+        {/* Schema text */}
+        <pre className="p-4 text-[11px] overflow-auto flex-1 leading-relaxed text-muted-foreground/70 whitespace-pre-wrap font-mono">
           {activeSchema}
         </pre>
       </aside>
 
-      {/* Main Chat */}
+      {/* ── Main ── */}
       <main className="flex flex-col flex-1 min-w-0">
         {/* Header */}
-        <div className="p-3 md:p-4 border-b flex items-center gap-3">
-          <button
-            className="md:hidden text-muted-foreground hover:text-foreground p-1 rounded"
-            onClick={() => setSchemaOpen(true)}
-            aria-label="View schema"
-          >
-            <svg
-              xmlns="http://www.w3.org/2000/svg"
-              width="20"
-              height="20"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              strokeWidth={2}
+        <div className="border-b border-border/60 bg-background/95 backdrop-blur-sm shrink-0">
+          <div className="px-3 md:px-5 py-3 flex items-center gap-3">
+            <button
+              className="md:hidden text-muted-foreground hover:text-foreground p-1.5 rounded-lg hover:bg-muted/60 transition-all"
+              onClick={() => setSchemaOpen(true)}
             >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M4 6h16M4 12h16M4 18h16"
-              />
-            </svg>
-          </button>
-          <div className="flex-1 min-w-0">
-            <h1 className="font-bold text-base md:text-lg leading-tight">
-              AskDB
-            </h1>
-            <p className="text-xs md:text-sm text-muted-foreground hidden sm:block">
-              {session
-                ? `Querying: ${session.table_name} — ${session.row_count} rows`
-                : "Querying: Chinook music store (default)"}
-            </p>
-          </div>
-
-          {/* Upload button in header for desktop */}
-          <div className="hidden md:block shrink-0">
-            {!session ? (
-              <>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="text-xs"
-                  disabled={uploading}
-                  onClick={() => fileInputRef.current?.click()}
-                >
-                  {uploading ? "Uploading..." : "⬆ Upload CSV"}
-                </Button>
-              </>
-            ) : (
-              <Button
-                variant="outline"
-                size="sm"
-                className="text-xs"
-                onClick={handleClearSession}
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="18"
+                height="18"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2}
               >
-                ✕ Clear CSV
-              </Button>
-            )}
-          </div>
-        </div>
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M4 6h16M4 12h16M4 18h16"
+                />
+              </svg>
+            </button>
 
-        {/* Dataset banner */}
-        {!session && (
-          <div className="px-4 py-2 bg-muted/50 border-b text-xs text-muted-foreground flex items-center gap-2">
-            <span>📀</span>
-            <span>
-              No CSV uploaded — using the{" "}
-              <span className="font-medium text-foreground">
-                Chinook music store
-              </span>{" "}
-              database by default.
-            </span>
-          </div>
-        )}
-
-        {/* Messages */}
-        <div className="flex-1 overflow-auto p-3 md:p-4 space-y-6">
-          {messages.length === 0 && !loading && (
-            <div className="text-center mt-10 md:mt-16 space-y-4 md:space-y-6 px-2">
-              <div className="space-y-2">
-                <p className="text-3xl">{session ? "📊" : "🎵"}</p>
-                <p className="font-medium text-sm md:text-base">
+            {/* Logo */}
+            <div className="flex items-center gap-2.5 flex-1 min-w-0">
+              <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center shrink-0 shadow-md">
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="white"
+                  strokeWidth="2.5"
+                >
+                  <ellipse cx="12" cy="5" rx="9" ry="3" />
+                  <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3" />
+                  <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5" />
+                </svg>
+              </div>
+              <div className="min-w-0">
+                <h1 className="font-bold text-sm md:text-base leading-tight tracking-tight">
+                  AskDB
+                </h1>
+                <p className="text-[11px] text-muted-foreground hidden sm:block truncate">
                   {session
-                    ? `Ask anything about ${session.table_name}`
-                    : "Ask anything about the music store"}
-                </p>
-                <p className="text-xs md:text-sm text-muted-foreground">
-                  {session
-                    ? `${session.row_count} rows · ${session.column_count} columns loaded`
-                    : "Type a question or try one of these:"}
+                    ? `${session.table_name} · ${session.row_count.toLocaleString()} rows`
+                    : "Chinook music store · default"}
                 </p>
               </div>
+            </div>
+
+            {/* Desktop upload */}
+            <div className="hidden md:block shrink-0">
+              {!session ? (
+                <>
+                  <button
+                    disabled={uploading}
+                    onClick={() => fileInputRef.current?.click()}
+                    className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-border/60 hover:bg-muted/60 transition-all text-muted-foreground hover:text-foreground disabled:opacity-50"
+                  >
+                    <svg
+                      width="12"
+                      height="12"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2.5"
+                    >
+                      <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
+                      <polyline points="17 8 12 3 7 8" />
+                      <line x1="12" y1="3" x2="12" y2="15" />
+                    </svg>
+                    {uploading ? "Uploading…" : "Upload CSV"}
+                  </button>
+                </>
+              ) : (
+                <button
+                  onClick={handleClearSession}
+                  className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-border/60 hover:bg-muted/60 transition-all text-muted-foreground hover:text-foreground"
+                >
+                  <svg
+                    width="12"
+                    height="12"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.5"
+                  >
+                    <path d="M18 6L6 18M6 6l12 12" />
+                  </svg>
+                  Clear CSV
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Dataset banner */}
+          {!session && (
+            <div className="px-4 md:px-5 py-1.5 bg-indigo-500/5 border-t border-indigo-500/10 text-[11px] text-muted-foreground flex items-center gap-2">
+              <div className="w-1.5 h-1.5 rounded-full bg-indigo-400 shrink-0" />
+              <span>
+                No CSV uploaded — using{" "}
+                <span className="font-semibold text-foreground/80">
+                  Chinook music store
+                </span>{" "}
+                by default
+              </span>
+            </div>
+          )}
+        </div>
+
+        {/* Messages */}
+        <div className="flex-1 overflow-auto px-3 md:px-5 py-6 space-y-6">
+          {/* Empty state */}
+          {messages.length === 0 && !loading && (
+            <div className="flex flex-col items-center justify-center h-full text-center space-y-6 pb-16">
+              <div className="space-y-3">
+                <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center mx-auto shadow-lg shadow-indigo-500/20">
+                  {session ? (
+                    <svg
+                      width="24"
+                      height="24"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="white"
+                      strokeWidth="2"
+                    >
+                      <rect x="3" y="3" width="18" height="18" rx="2" />
+                      <path d="M3 9h18M9 21V9" />
+                    </svg>
+                  ) : (
+                    <svg
+                      width="24"
+                      height="24"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="white"
+                      strokeWidth="2"
+                    >
+                      <ellipse cx="12" cy="5" rx="9" ry="3" />
+                      <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3" />
+                      <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5" />
+                    </svg>
+                  )}
+                </div>
+                <div>
+                  <p className="font-semibold text-base md:text-lg">
+                    {session
+                      ? `Ask anything about ${session.table_name}`
+                      : "Ask anything about the music store"}
+                  </p>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    {session
+                      ? `${session.row_count.toLocaleString()} rows · ${session.column_count} columns ready`
+                      : "Type a question in plain English — no SQL needed"}
+                  </p>
+                </div>
+              </div>
+
               {!session && (
-                <div className="flex flex-wrap justify-center gap-2">
+                <div className="flex flex-wrap justify-center gap-2 max-w-lg">
                   {SAMPLE_QUESTIONS.map((q) => (
                     <button
                       key={q}
                       onClick={() => handleAsk(q)}
-                      className="text-xs md:text-sm px-3 py-1.5 rounded-full border hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
+                      className="text-xs px-3.5 py-1.5 rounded-full border border-border/70 hover:border-indigo-400/50 hover:bg-indigo-500/5 hover:text-indigo-500 transition-all text-muted-foreground"
                     >
                       {q}
                     </button>
@@ -930,68 +1012,99 @@ export default function Home() {
             </div>
           )}
 
+          {/* Message list */}
           {messages.map((msg, i) => (
             <div key={i}>
+              {/* User bubble */}
               {msg.role === "user" && (
                 <div className="flex justify-end">
-                  <div className="bg-primary text-primary-foreground rounded-2xl rounded-tr-sm px-3 md:px-4 py-2 max-w-[85%] md:max-w-lg text-sm">
+                  <div className="bg-indigo-600 text-white rounded-2xl rounded-tr-sm px-4 py-2.5 max-w-[85%] md:max-w-lg text-sm leading-relaxed shadow-md shadow-indigo-500/20">
                     {msg.question}
                   </div>
                 </div>
               )}
 
+              {/* Assistant response */}
               {msg.role === "assistant" && (
-                <div className="space-y-3 max-w-full md:max-w-3xl">
-                  {msg.error ? (
-                    <div className="rounded-lg border border-destructive/30 bg-destructive/5 overflow-hidden">
-                      <div className="px-3 py-1.5 border-b border-destructive/20 text-xs text-destructive font-medium flex items-center gap-1.5">
-                        <span>⚠</span> Query Failed
-                      </div>
-                      {msg.sql && (
-                        <div className="border-b border-destructive/10">
-                          <div className="px-3 py-1 text-xs text-muted-foreground flex justify-between items-center">
-                            <span>Generated SQL</span>
-                            <CopyButton text={msg.sql} />
+                <div className="flex items-start gap-3">
+                  <div className="w-7 h-7 rounded-full bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center shrink-0 mt-0.5 shadow-md">
+                    <span className="text-white text-[10px] font-bold">AI</span>
+                  </div>
+
+                  <div className="space-y-3 flex-1 min-w-0 max-w-3xl">
+                    {msg.error ? (
+                      <div className="rounded-xl border border-red-500/20 bg-red-500/5 overflow-hidden">
+                        <div className="px-4 py-2 border-b border-red-500/10 text-xs text-red-500 font-semibold flex items-center gap-2">
+                          <svg
+                            width="12"
+                            height="12"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2.5"
+                          >
+                            <circle cx="12" cy="12" r="10" />
+                            <line x1="12" y1="8" x2="12" y2="12" />
+                            <line x1="12" y1="16" x2="12.01" y2="16" />
+                          </svg>
+                          Query Failed
+                        </div>
+                        {msg.sql && (
+                          <div className="bg-zinc-950 border-b border-red-500/10">
+                            <div className="px-4 py-1.5 flex justify-between items-center border-b border-white/5">
+                              <span className="text-[10px] text-zinc-500 font-mono uppercase tracking-wider">
+                                sql
+                              </span>
+                              <CopyButton text={msg.sql} />
+                            </div>
+                            <pre className="px-4 py-3 text-xs font-mono text-zinc-300 overflow-auto leading-relaxed">
+                              {msg.sql}
+                            </pre>
                           </div>
-                          <pre className="px-3 pb-3 text-xs font-mono overflow-auto">
+                        )}
+                        <p className="px-4 py-3 text-xs text-red-500 font-mono break-words leading-relaxed">
+                          {msg.error}
+                        </p>
+                      </div>
+                    ) : (
+                      <>
+                        {/* SQL block — dark editor style */}
+                        <div className="rounded-xl overflow-hidden border border-border/40 shadow-sm">
+                          <div className="bg-zinc-950 border-b border-white/5 px-4 py-2 flex justify-between items-center">
+                            <div className="flex items-center gap-2">
+                              <div className="flex gap-1">
+                                <div className="w-2.5 h-2.5 rounded-full bg-zinc-700" />
+                                <div className="w-2.5 h-2.5 rounded-full bg-zinc-700" />
+                                <div className="w-2.5 h-2.5 rounded-full bg-zinc-700" />
+                              </div>
+                              <span className="text-[10px] text-zinc-500 font-mono uppercase tracking-wider ml-1">
+                                generated sql
+                              </span>
+                            </div>
+                            {msg.sql && <CopyButton text={msg.sql} />}
+                          </div>
+                          <pre className="bg-zinc-950 px-4 py-4 text-xs font-mono text-emerald-300/90 overflow-auto leading-relaxed">
                             {msg.sql}
                           </pre>
                         </div>
-                      )}
-                      <p className="px-3 py-2 text-xs text-destructive font-mono break-words">
-                        {msg.error}
-                      </p>
-                    </div>
-                  ) : (
-                    <>
-                      <div className="rounded-lg border bg-muted overflow-hidden">
-                        <div className="px-3 py-1.5 border-b text-xs text-muted-foreground flex justify-between items-center">
-                          <span className="uppercase tracking-wider">
-                            Generated SQL
-                          </span>
-                          {msg.sql && <CopyButton text={msg.sql} />}
-                        </div>
-                        <pre className="p-3 text-xs font-mono overflow-auto">
-                          {msg.sql}
-                        </pre>
-                      </div>
 
-                      {msg.results && msg.results.length > 0 && (
-                        <ResultBlock
-                          results={msg.results}
-                          displayColumns={msg.display_columns}
-                          chartHint={msg.chart_hint}
-                          truncated={msg.truncated}
-                        />
-                      )}
+                        {msg.results && msg.results.length > 0 && (
+                          <ResultBlock
+                            results={msg.results}
+                            displayColumns={msg.display_columns}
+                            chartHint={msg.chart_hint}
+                            truncated={msg.truncated}
+                          />
+                        )}
 
-                      {msg.results && msg.results.length === 0 && (
-                        <p className="text-sm text-muted-foreground">
-                          No results returned.
-                        </p>
-                      )}
-                    </>
-                  )}
+                        {msg.results && msg.results.length === 0 && (
+                          <p className="text-sm text-muted-foreground italic">
+                            No results returned.
+                          </p>
+                        )}
+                      </>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
@@ -1001,8 +1114,9 @@ export default function Home() {
           <div ref={bottomRef} />
         </div>
 
-        {/* Input */}
-        <div className="p-3 md:p-4 border-t space-y-2">
+        {/* Input area */}
+        <div className="border-t border-border/60 bg-background/95 backdrop-blur-sm px-3 md:px-5 py-3 space-y-2.5 shrink-0">
+          {/* Sample chips — only when Chinook and has messages */}
           {messages.length > 0 && !session && (
             <div className="flex flex-wrap gap-1.5">
               {SAMPLE_QUESTIONS.map((q) => (
@@ -1010,33 +1124,59 @@ export default function Home() {
                   key={q}
                   onClick={() => handleAsk(q)}
                   disabled={loading}
-                  className="text-xs px-2.5 py-1 rounded-full border hover:bg-muted transition-colors text-muted-foreground hover:text-foreground disabled:opacity-40"
+                  className="text-[11px] px-2.5 py-1 rounded-full border border-border/60 hover:border-indigo-400/50 hover:bg-indigo-500/5 hover:text-indigo-500 transition-all text-muted-foreground disabled:opacity-40"
                 >
                   {q}
                 </button>
               ))}
             </div>
           )}
-          <div className="flex gap-2">
+
+          <div className="flex gap-2 items-center">
             <Input
               placeholder={
                 session
-                  ? `Ask about ${session.table_name}...`
-                  : "Ask about the music store..."
+                  ? `Ask about ${session.table_name}…`
+                  : "Ask about the music store…"
               }
               value={question}
               onChange={(e) => setQuestion(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && handleAsk()}
               disabled={loading}
-              className="text-sm"
+              className="text-sm rounded-xl border-border/60 bg-muted/20 focus:bg-background transition-colors h-10"
             />
             <Button
               onClick={() => handleAsk()}
               disabled={loading}
+              className="rounded-xl h-10 px-4 bg-indigo-600 hover:bg-indigo-700 text-white shrink-0 shadow-sm transition-all"
               size="sm"
-              className="shrink-0"
             >
-              {loading ? "..." : "Ask"}
+              {loading ? (
+                <svg
+                  className="animate-spin"
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.5"
+                >
+                  <path d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" opacity="0.3" />
+                  <path d="M21 12a9 9 0 00-9-9" />
+                </svg>
+              ) : (
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.5"
+                >
+                  <line x1="22" y1="2" x2="11" y2="13" />
+                  <polygon points="22 2 15 22 11 13 2 9 22 2" />
+                </svg>
+              )}
             </Button>
           </div>
         </div>

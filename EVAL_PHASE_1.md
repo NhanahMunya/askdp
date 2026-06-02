@@ -244,7 +244,7 @@ After completing the table, group the failures into 3–4 recurring patterns. Ex
 
 ```
 Pattern 1: Business-logic ambiguity
-- Observed on questions: Q14 (most popular genre in Germany). .
+- Observed on questions: Q14 (most popular genre in Germany).
 - Description: The model encounters a fuzzy business term ("popular,"
   "most sales") and silently picks one interpretation from several valid
   ones, without surfacing the choice to the user. On Q14, it chose
@@ -260,10 +260,12 @@ Pattern 1: Business-logic ambiguity
   to explicit SQL fragments for this schema.
 
 Pattern 2: Technical correctness with noisy output
-- Observed on questions: Q9 (top 5 customers by spend).
+- Observed on questions: Q5, Q6, Q8, Q9, Q11, Q15 (6 of 7 partials — the dominant failure pattern).
 - Description: SQL executes correctly and the answer is mathematically right,
   but the result set includes columns the user didn't ask for and wouldn't
-  want — in Q9, the model returned customer_id alongside name and spend.
+  want. Two sub-flavors observed: (a) Q5 returned all track columns (SELECT *
+  style) when only name + price were needed; (b) Q6/Q8/Q9/Q11/Q15 returned
+  the right columns plus primary keys like customer_id, employee_id, album_id.
   Strictly correct, but introduces friction for non-technical users who
   have to mentally filter the output.
 - Likely cause: LLMs are trained on SQL corpora heavy with SELECT * and
@@ -274,20 +276,13 @@ Pattern 2: Technical correctness with noisy output
 - Phase 2 implication: Either prompt the model toward minimal columns
   (cheap, partial fix), or add a result-presentation layer that decides
   which columns to show based on the question type (cleaner, more work).
-
-> The dominant failure mode is output noise (6 of 7 partials) rather than SQL incorrectness. Phase 2 will therefore prioritize a result-presentation layer over prompting changes, and will introduce CSV upload to test the system on databases outside Chinook to ensure the 100% execution accuracy isn't an artifact of dataset familiarity.
 ```
 
 ---
 
 ## Implications for Phase 2
 
-One paragraph. Based on what you observed, what's the highest-leverage fix?
-
-Examples of conclusions a Phase 1 eval might lead to:
-
-- _"Schema retrieval is needed — Phase 2 should embed schema and retrieve only relevant tables per question."_
-- _"A semantic layer for business terms ('popular', 'top customer') is needed — these account for the majority of failures and can't be fixed by better prompting alone."_
+The dominant Phase 1 failure mode is **output noise, not SQL incorrectness**: execution accuracy across all 15 questions was effectively 100% (every query ran and produced data answering the question), but 6 of 7 partials were caused by the model returning extra columns — primarily primary keys — that a non-technical user wouldn't want. Phase 2 should therefore prioritize a result-presentation layer over changes to the SQL-generation prompt itself. The highest-leverage fix is to ask the LLM in a single structured-output call to return both the SQL *and* a list of display columns it considers appropriate for a human (Strategy C — combine generation and presentation reasoning in one model call to avoid added latency or cost). Independent of that, Phase 2 must also introduce CSV upload with dynamic schema introspection so the system can be evaluated on databases the model has never seen — the current 100% execution accuracy on Chinook may partly reflect the dataset's familiarity in training data, and that hypothesis is not yet falsifiable. Business-logic ambiguity (Pattern 1) is the more dangerous failure type but only manifested once in this eval; it stays on the Phase 2 radar but is not the top priority.
 
 ---
 
