@@ -98,7 +98,6 @@ Create `askdp/web/.env.local`:
 These are real — not excuses, just honest engineering notes:
 
 - **Business-logic ambiguity remains** — fuzzy terms like "most popular" are interpreted silently. The model picks one definition (e.g. `COUNT` vs `SUM`) without surfacing the choice. Phase 3 work.
-- **Auto-charts not yet rendered** — the backend returns a `chart_hint` per query, but the frontend still defaults to a table view. Chart rendering is next.
 - **No auth** — anyone with the URL can query. Rate limiting (10/min per IP) is the only guard.
 - **CSV inserts are row-by-row** — uploads >5,000 rows will be slow. `executemany` / `COPY` planned.
 - **Date types in CSV upload aren't inferred** — dates land as TEXT and the model has to wrap in `TO_DATE(...)`. Works, but adds latency on date-math questions.
@@ -109,22 +108,22 @@ These are real — not excuses, just honest engineering notes:
 
 ## What's coming (Phase 3)
 
-- [ ] Auto-chart rendering in the UI (using the `chart_hint` already returned by the backend)
 - [ ] Semantic layer / clarification step for business-logic ambiguity ("popular," "top," "active")
 - [ ] Auth + per-user query history
 - [ ] Faster CSV ingest (batch INSERT or COPY)
 - [ ] Latency optimisation for date-heavy queries
+- [ ] Adversarial eval on a truly out-of-distribution schema
 
 ---
 
 ## Phase 2 checklist (shipped)
 
+- [x] Auto-chart rendering — backend returns `chart_hint`, frontend renders 6 chart types (bar/line/pie/scatter/grouped-bar) via Recharts with heuristic fallback, plus smart cell formatting (currency, dates, durations, percentages)
 - [x] Dynamic schema introspection — works on any uploaded CSV via session-scoped Postgres schemas
 - [x] Conversation memory — last 4 exchanges sent as multi-turn history
 - [x] Self-healing queries — retry with error context when SQL fails (up to 2 attempts)
 - [x] Result presentation layer (Strategy C) — structured LLM output suppresses primary keys and other noise
 - [x] Eval on a CSV the model has never seen — 15/15 (100%) on uploaded online sales data
-- [ ] Chart rendering for numeric results — backend hint shipped, frontend rendering pending
 
 ---
 

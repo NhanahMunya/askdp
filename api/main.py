@@ -79,6 +79,10 @@ MAX_ROWS = 100
 STATEMENT_TIMEOUT_MS = 5000
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB cap on uploaded CSVs
 
+def stopwatch():
+    """Returns a closure you call to get elapsed ms since creation."""
+    t = time.perf_counter()
+    return lambda: int((time.perf_counter() - t) * 1000)
 
 # ── Pandas dtype → Postgres type mapping ─────────────────────────────────────
 def pandas_dtype_to_pg(dtype) -> str:
@@ -129,6 +133,12 @@ def log_query(
     output_tokens: int,
     duration_ms: int,
     ip_address: str,
+    schema_resolution_ms: int = 0,
+    schema_introspection_ms: int = 0,
+    llm_call_ms: int = 0,
+    sql_execution_ms: int = 0,
+    heal_retry_ms: int = 0,
+    retry_count: int = 0,
 ):
     try:
         conn = psycopg.connect(os.getenv("DATABASE_URL"))
@@ -137,17 +147,22 @@ def log_query(
             """
             INSERT INTO query_log
                 (question, sql_generated, result_rows, error, model,
-                 input_tokens, output_tokens, duration_ms, ip_address)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 input_tokens, output_tokens, duration_ms, ip_address,
+                 schema_resolution_ms, schema_introspection_ms, llm_call_ms,
+                 sql_execution_ms, heal_retry_ms, retry_count)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (question, sql, result_rows, error, model,
-             input_tokens, output_tokens, duration_ms, ip_address),
+             input_tokens, output_tokens, duration_ms, ip_address,
+             schema_resolution_ms, schema_introspection_ms, llm_call_ms,
+             sql_execution_ms, heal_retry_ms, retry_count),
         )
         conn.commit()
         cur.close()
         conn.close()
     except Exception as e:
         sentry_sdk.capture_exception(e)
+
 
 # Self healing sql logic
 def log_retry(
@@ -156,7 +171,7 @@ def log_retry(
     error: str,
     retry_number: int,
     healed_sql: str,
-    healed_successfully: bool,
+    healed_successfully: bool,f
 ):
     try:
         conn = psycopg.connect(os.getenv("DATABASE_URL"))
@@ -267,6 +282,7 @@ class UploadResponse(BaseModel):
     column_count: int
 
 
+
 # ── Upload endpoint ───────────────────────────────────────────────────────────
 @app.post("/api/upload", response_model=UploadResponse)
 async def upload_csv(file: UploadFile = File(...)):
@@ -361,6 +377,8 @@ async def upload_csv(file: UploadFile = File(...)):
         column_count=len(df.columns),
     )
 
+#Data Cache for csv schema introspection
+SCHEMA_CACHE: dict[str, dict] = {}
 
 # ── Ask endpoint 
 @app.post("/api/ask", response_model=AskResponse)
@@ -373,6 +391,13 @@ async def ask(req: AskRequest, request: Request):
     input_tokens = 0
     output_tokens = 0
 
+
+
+    # ── Phase: schema resolution ──────────────────────────────────────────────
+    t_schema = stopwatch()
+    schema_introspection_ms = 0
+    schema_resolution_ms = 0
+
     # Resolve schema — CSV session or Chinook fallback
     if req.session_id:
         conn = psycopg.connect(os.getenv("DATABASE_URL"))
@@ -384,36 +409,50 @@ async def ask(req: AskRequest, request: Request):
         row = cur.fetchone()
         cur.close()
         conn.close()
+        schema_resolution_ms = t_schema()
 
         if row:
             schema_name, table_name = row
-            # Introspect live columns from Postgres
-            conn = psycopg.connect(os.getenv("DATABASE_URL"))
-            cur = conn.cursor()
-            cur.execute(
-                """
-                SELECT column_name, data_type
-                FROM information_schema.columns
-                WHERE table_schema = %s AND table_name = %s
-                ORDER BY ordinal_position
-                """,
-                (schema_name, table_name),
-            )
-            columns = cur.fetchall()
-            cur.close()
-            conn.close()
 
-            col_defs = ", ".join(
-                [f"{col} {dtype}" for col, dtype in columns]
-            )
-            active_schema = (
-                f"CREATE TABLE {schema_name}.{table_name} ({col_defs});"
-            )
-            schema_context = (
-                f"You are querying a user-uploaded CSV table.\n{active_schema}\n"
-                f"Always prefix the table name with the schema: "
-                f"{schema_name}.{table_name}"
-            )
+            t_introspect = stopwatch()
+            cached = SCHEMA_CACHE.get(req.session_id)
+
+            if cached:
+                # Cache hit — skip the information_schema query entirely
+                schema_context = cached["schema_context"]
+                schema_introspection_ms = t_introspect()  # near-zero, just the dict lookup
+            else:
+                # Cache miss — introspect live columns from Postgres
+                conn = psycopg.connect(os.getenv("DATABASE_URL"))
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    SELECT column_name, data_type
+                    FROM information_schema.columns
+                    WHERE table_schema = %s AND table_name = %s
+                    ORDER BY ordinal_position
+                    """,
+                    (schema_name, table_name),
+                )
+                columns = cur.fetchall()
+                cur.close()
+                conn.close()
+                schema_introspection_ms = t_introspect()
+
+                col_defs = ", ".join(
+                    [f"{col} {dtype}" for col, dtype in columns]
+                )
+                active_schema = (
+                    f"CREATE TABLE {schema_name}.{table_name} ({col_defs});"
+                )
+                schema_context = (
+                    f"You are querying a user-uploaded CSV table.\n{active_schema}\n"
+                    f"Always prefix the table name with the schema: "
+                    f"{schema_name}.{table_name}"
+                )
+
+                # Store in cache for subsequent questions in this session
+                SCHEMA_CACHE[req.session_id] = {"schema_context": schema_context}
         else:
             # session_id not found — fall back to Chinook
             schema_context = (
@@ -425,6 +464,10 @@ async def ask(req: AskRequest, request: Request):
             "No CSV uploaded. Using the Chinook music store database.\n"
             + CHINOOK_SCHEMA
         )
+        schema_resolution_ms = t_schema()
+        
+
+    
 
     # Ask Claude
     client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
@@ -470,14 +513,14 @@ async def ask(req: AskRequest, request: Request):
 
         Return ONLY the JSON object. No explanation, no markdown, no backticks."""
     })
-
+    t_llm = stopwatch()
     message = client.messages.create(
         model=model_name,
         max_tokens=1024,
         system="You are a SQL expert with memory of the current conversation. Use prior questions and SQL to understand follow-up questions.",
         messages=history_messages,
     )
-
+    llm_call_ms = t_llm()
     raw = message.content[0].text.strip()
     input_tokens = message.usage.input_tokens
     output_tokens = message.usage.output_tokens
@@ -499,9 +542,12 @@ async def ask(req: AskRequest, request: Request):
     # Safety check
     if not is_select_only(sql):
         duration_ms = int((time.time() - start) * 1000)
-        log_query(req.question, sql, 0,
-                  "Only read queries allowed.", model_name,
-                  input_tokens, output_tokens, duration_ms, ip)
+        log_query(
+            req.question, sql, 0, "Only read queries allowed.", model_name,
+            input_tokens, output_tokens, duration_ms, ip,
+            schema_resolution_ms, schema_introspection_ms, llm_call_ms,
+            0, 0, 0,
+        )
         return AskResponse(
             sql=sql,
             results=[],
@@ -518,9 +564,12 @@ async def ask(req: AskRequest, request: Request):
     current_display_columns = display_columns
     current_chart_hint = chart_hint
     last_error = None
+    heal_retry_ms = 0
+    retry_count = 0
 
     for attempt in range(MAX_RETRIES + 1):
         try:
+            t_exec = stopwatch()
             conn = psycopg.connect(os.getenv("DATABASE_URL"))
             cur = conn.cursor()
             cur.execute(f"SET statement_timeout = {STATEMENT_TIMEOUT_MS}")
@@ -530,6 +579,7 @@ async def ask(req: AskRequest, request: Request):
             cur.execute(limited_sql)
             cols = [desc[0] for desc in cur.description]
             rows = cur.fetchall()
+            sql_execution_ms = t_exec()
             truncated = len(rows) > MAX_ROWS
             rows = rows[:MAX_ROWS]
             results = [dict(zip(cols, row)) for row in rows]
@@ -539,7 +589,9 @@ async def ask(req: AskRequest, request: Request):
             duration_ms = int((time.time() - start) * 1000)
             log_query(
                 req.question, current_sql, len(results), None,
-                model_name, input_tokens, output_tokens, duration_ms, ip
+                model_name, input_tokens, output_tokens, duration_ms, ip,
+                schema_resolution_ms, schema_introspection_ms, llm_call_ms,
+                sql_execution_ms, heal_retry_ms, retry_count,
             )
 
             return AskResponse(
@@ -554,17 +606,21 @@ async def ask(req: AskRequest, request: Request):
             )
 
         except Exception as e:
+            sql_execution_ms = t_exec() if "t_exec" in locals() else sql_execution_ms
             last_error = str(e)
 
             # Log the failure
             log_query(
                 req.question, current_sql, 0, last_error,
                 model_name, input_tokens, output_tokens,
-                int((time.time() - start) * 1000), ip
+                int((time.time() - start) * 1000), ip,
+                schema_resolution_ms, schema_introspection_ms, llm_call_ms,
+                sql_execution_ms, heal_retry_ms, retry_count,
             )
 
             if attempt < MAX_RETRIES:
                 # Try to heal
+                t_heal = stopwatch()
                 healed_sql, healed_cols, healed_hint = heal_query(
                     client=client,
                     question=req.question,
@@ -573,6 +629,8 @@ async def ask(req: AskRequest, request: Request):
                     error=last_error,
                     attempt=attempt + 1,
                 )
+                heal_retry_ms += t_heal()
+                retry_count += 1
 
                 healed_successfully = healed_sql != current_sql
                 log_retry(
