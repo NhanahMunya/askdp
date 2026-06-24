@@ -15,6 +15,9 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from dotenv import load_dotenv
+import jwt
+import httpx
+from functools import lru_cache
 
 load_dotenv("../.env")
 
@@ -139,6 +142,7 @@ def log_query(
     sql_execution_ms: int = 0,
     heal_retry_ms: int = 0,
     retry_count: int = 0,
+    user_id: str | None = None,
 ):
     try:
         conn = psycopg.connect(os.getenv("DATABASE_URL"))
@@ -149,13 +153,13 @@ def log_query(
                 (question, sql_generated, result_rows, error, model,
                  input_tokens, output_tokens, duration_ms, ip_address,
                  schema_resolution_ms, schema_introspection_ms, llm_call_ms,
-                 sql_execution_ms, heal_retry_ms, retry_count)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 sql_execution_ms, heal_retry_ms, retry_count, user_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (question, sql, result_rows, error, model,
              input_tokens, output_tokens, duration_ms, ip_address,
              schema_resolution_ms, schema_introspection_ms, llm_call_ms,
-             sql_execution_ms, heal_retry_ms, retry_count),
+             sql_execution_ms, heal_retry_ms, retry_count, user_id),
         )
         conn.commit()
         cur.close()
@@ -171,7 +175,7 @@ def log_retry(
     error: str,
     retry_number: int,
     healed_sql: str,
-    healed_successfully: bool,f
+    healed_successfully: bool
 ):
     try:
         conn = psycopg.connect(os.getenv("DATABASE_URL"))
@@ -252,6 +256,57 @@ def heal_query(
     except Exception:
         return raw.strip(), [], None
 
+#Data Cache for csv schema introspection
+SCHEMA_CACHE: dict[str, dict] = {}
+# Auth 
+
+@lru_cache(maxsize=1)
+def get_clerk_jwks() -> dict:
+    """Fetch Clerk's public JWKS. Cached in memory — rotates automatically on decode failure."""
+    url = os.getenv("CLERK_JWKS_URL")
+    resp = httpx.get(url, timeout=10)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def decode_clerk_jwt(token: str) -> dict | None:
+    """Decode and verify a Clerk JWT. Returns claims dict or None on any failure."""
+    try:
+        jwks = get_clerk_jwks()
+        public_keys = jwt.PyJWKClient(os.getenv("CLERK_JWKS_URL"))
+        signing_key = public_keys.get_signing_key_from_jwt(token)
+        claims = jwt.decode(
+            token,
+            signing_key.key,
+            algorithms=["RS256"],
+            options={"verify_aud": False},
+        )
+        return claims
+    except Exception:
+        # Rotate JWKS cache on failure — keys may have rotated
+        get_clerk_jwks.cache_clear()
+        return None
+
+
+def get_user_id_optional(request: Request) -> str | None:
+    """Returns user_id if a valid JWT is present, None otherwise. Never raises."""
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return None
+    token = auth.removeprefix("Bearer ").strip()
+    claims = decode_clerk_jwt(token)
+    if not claims:
+        return None
+    return claims.get("sub")
+
+
+def get_user_id_required(request: Request) -> str:
+    """Returns user_id, raises 401 if missing or invalid."""
+    user_id = get_user_id_optional(request)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required.")
+    return user_id
+
 # ── Models ────────────────────────────────────────────────────────────────────
 class HistoryEntry(BaseModel):
     question: str
@@ -285,7 +340,8 @@ class UploadResponse(BaseModel):
 
 # ── Upload endpoint ───────────────────────────────────────────────────────────
 @app.post("/api/upload", response_model=UploadResponse)
-async def upload_csv(file: UploadFile = File(...)):
+async def upload_csv(request: Request, file: UploadFile = File(...)):
+    user_id = get_user_id_required(request)
     # Read CSV
     contents = await file.read()
 
@@ -347,8 +403,8 @@ async def upload_csv(file: UploadFile = File(...)):
         """
     )
     cur.execute(
-        "INSERT INTO public.upload_sessions (session_id, schema_name, table_name) VALUES (%s, %s, %s)",
-        (session_id, schema_name, table_name),
+        "INSERT INTO public.upload_sessions (session_id, schema_name, table_name, user_id) VALUES (%s, %s, %s, %s)",
+        (session_id, schema_name, table_name, user_id),
     )
 
     # Insert rows in batches
@@ -369,6 +425,10 @@ async def upload_csv(file: UploadFile = File(...)):
 
     schema_string = build_schema_string(schema_name, table_name, df)
 
+    # Invalidate any cached schema for this session
+    # (safe no-op if session_id isn't cached yet)
+    SCHEMA_CACHE.pop(session_id, None)
+
     return UploadResponse(
         session_id=session_id,
         table_name=table_name,
@@ -377,19 +437,33 @@ async def upload_csv(file: UploadFile = File(...)):
         column_count=len(df.columns),
     )
 
-#Data Cache for csv schema introspection
-SCHEMA_CACHE: dict[str, dict] = {}
+
 
 # ── Ask endpoint 
 @app.post("/api/ask", response_model=AskResponse)
 @limiter.limit("10/minute")
-async def ask(req: AskRequest, request: Request):   
+async def ask(req: AskRequest, request: Request):
     start = time.time()
     ip = get_remote_address(request)
     model_name = "claude-sonnet-4-5"
     sql = ""
     input_tokens = 0
     output_tokens = 0
+
+    # Optional auth — anonymous users get Chinook only
+    user_id = get_user_id_optional(request)
+
+    # Block anonymous users from using CSV sessions
+    if req.session_id and not user_id:
+        return AskResponse(
+            sql="",
+            results=[],
+            display_columns=[],
+            chart_hint=None,
+            error="Authentication required to query uploaded CSV data.",
+            input_tokens=0,
+            output_tokens=0,
+        )
 
 
 
@@ -546,7 +620,7 @@ async def ask(req: AskRequest, request: Request):
             req.question, sql, 0, "Only read queries allowed.", model_name,
             input_tokens, output_tokens, duration_ms, ip,
             schema_resolution_ms, schema_introspection_ms, llm_call_ms,
-            0, 0, 0,
+            0, 0, 0, user_id=user_id,
         )
         return AskResponse(
             sql=sql,
@@ -591,7 +665,7 @@ async def ask(req: AskRequest, request: Request):
                 req.question, current_sql, len(results), None,
                 model_name, input_tokens, output_tokens, duration_ms, ip,
                 schema_resolution_ms, schema_introspection_ms, llm_call_ms,
-                sql_execution_ms, heal_retry_ms, retry_count,
+                sql_execution_ms, heal_retry_ms, retry_count, user_id=user_id,
             )
 
             return AskResponse(
@@ -615,7 +689,7 @@ async def ask(req: AskRequest, request: Request):
                 model_name, input_tokens, output_tokens,
                 int((time.time() - start) * 1000), ip,
                 schema_resolution_ms, schema_introspection_ms, llm_call_ms,
-                sql_execution_ms, heal_retry_ms, retry_count,
+                sql_execution_ms, heal_retry_ms, retry_count, user_id=user_id,
             )
 
             if attempt < MAX_RETRIES:

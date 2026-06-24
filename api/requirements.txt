@@ -9,3 +9,6 @@ sentry-sdk
 pandas
 python-multipart
 requests
+PyJWT
+cryptography
+httpx
