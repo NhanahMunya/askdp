@@ -257,7 +257,7 @@ def heal_query(
         return raw.strip(), [], None
 
 #Data Cache for csv schema introspection
-SCHEMA_CACHE: dict[str, dict] = {}
+SCHEMA_CACHE: dict[tuple[str | None, str], dict] = {}
 # Auth 
 
 @lru_cache(maxsize=1)
@@ -427,7 +427,7 @@ async def upload_csv(request: Request, file: UploadFile = File(...)):
 
     # Invalidate any cached schema for this session
     # (safe no-op if session_id isn't cached yet)
-    SCHEMA_CACHE.pop(session_id, None)
+    SCHEMA_CACHE.pop((user_id, session_id), None)
 
     return UploadResponse(
         session_id=session_id,
@@ -489,7 +489,8 @@ async def ask(req: AskRequest, request: Request):
             schema_name, table_name = row
 
             t_introspect = stopwatch()
-            cached = SCHEMA_CACHE.get(req.session_id)
+            cache_key = (user_id, req.session_id)
+            cached = SCHEMA_CACHE.get(cache_key)
 
             if cached:
                 # Cache hit — skip the information_schema query entirely
@@ -526,7 +527,7 @@ async def ask(req: AskRequest, request: Request):
                 )
 
                 # Store in cache for subsequent questions in this session
-                SCHEMA_CACHE[req.session_id] = {"schema_context": schema_context}
+                SCHEMA_CACHE[cache_key] = {"schema_context": schema_context} 
         else:
             # session_id not found — fall back to Chinook
             schema_context = (
