@@ -336,6 +336,90 @@ class UploadResponse(BaseModel):
     row_count: int
     column_count: int
 
+class HistoryItem(BaseModel):
+    id: int
+    question: str
+    sql_generated: str | None
+    result_rows: int | None
+    created_at: str
+    has_error: bool
+
+class RehydrateItem(BaseModel):
+    question: str
+    sql: str
+    result_rows: int | None
+    has_error: bool
+    error: str | None
+
+
+@app.get("/api/history/recent", response_model=list[RehydrateItem])
+async def get_recent_history(request: Request):
+    """Returns last 10 queries for chat rehydration on page load."""
+    user_id = get_user_id_required(request)
+    try:
+        conn = psycopg.connect(os.getenv("DATABASE_URL"))
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT question, sql_generated, result_rows, error
+            FROM query_log
+            WHERE user_id = %s
+            ORDER BY created_at DESC
+            LIMIT 10
+            """,
+            (user_id,),
+        )
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        # Reverse so oldest is first (natural chat order)
+        return [
+            RehydrateItem(
+                question=row[0],
+                sql=row[1] or "",
+                result_rows=row[2],
+                has_error=row[3] is not None,
+                error=row[3],
+            )
+            for row in reversed(rows)
+        ]
+    except Exception as e:
+        sentry_sdk.capture_exception(e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/history", response_model=list[HistoryItem])
+async def get_history(request: Request):
+    user_id = get_user_id_required(request)
+    try:
+        conn = psycopg.connect(os.getenv("DATABASE_URL"))
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id, question, sql_generated, result_rows, created_at, error
+            FROM query_log
+            WHERE user_id = %s
+            ORDER BY created_at DESC
+            LIMIT 50
+            """,
+            (user_id,),
+        )
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return [
+            HistoryItem(
+                id=row[0],
+                question=row[1],
+                sql_generated=row[2],
+                result_rows=row[3],
+                created_at=row[4].isoformat() if row[4] else "",
+                has_error=row[5] is not None,
+            )
+            for row in rows
+        ]
+    except Exception as e:
+        sentry_sdk.capture_exception(e)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ── Upload endpoint ───────────────────────────────────────────────────────────
@@ -477,9 +561,9 @@ async def ask(req: AskRequest, request: Request):
         conn = psycopg.connect(os.getenv("DATABASE_URL"))
         cur = conn.cursor()
         cur.execute(
-            "SELECT schema_name, table_name FROM upload_sessions WHERE session_id = %s",
-            (req.session_id,),
-        )
+    "SELECT schema_name, table_name FROM upload_sessions WHERE session_id = %s AND user_id = %s",
+    (req.session_id, user_id),
+)
         row = cur.fetchone()
         cur.close()
         conn.close()

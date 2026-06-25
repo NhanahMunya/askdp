@@ -129,6 +129,7 @@ type Message = {
   chart_hint?: string | null;
   error?: string | null;
   truncated?: boolean;
+  rehydrated?: boolean;
 };
 
 type SessionInfo = {
@@ -137,6 +138,15 @@ type SessionInfo = {
   schema_string: string;
   row_count: number;
   column_count: number;
+};
+
+type HistoryItem = {
+  id: number;
+  question: string;
+  sql_generated: string | null;
+  result_rows: number | null;
+  created_at: string;
+  has_error: boolean;
 };
 
 const CHART_COLORS = [
@@ -624,6 +634,9 @@ export default function Home() {
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const [history, setHistory] = useState<HistoryItem[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [sidebarTab, setSidebarTab] = useState<"schema" | "history">("schema");
 
   // Auth-aware fetch wrapper
   async function callAPI(endpoint: string, options: RequestInit = {}) {
@@ -675,6 +688,64 @@ export default function Home() {
     setSession(null);
     setMessages([]);
   }
+
+  async function fetchHistory() {
+    if (!isSignedIn) return;
+    setHistoryLoading(true);
+    try {
+      const res = await callAPI("/api/history");
+      if (res.ok) {
+        const data = await res.json();
+        setHistory(data);
+      }
+    } catch {
+      // silently fail — history is not critical
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
+  // Fetch history when user signs in
+  useEffect(() => {
+    if (isSignedIn) fetchHistory();
+    else setHistory([]);
+  }, [isSignedIn]);
+
+  // Rehydrate last 10 messages when user signs in and chat is empty
+  useEffect(() => {
+    if (!isSignedIn || messages.length > 0) return;
+    (async () => {
+      try {
+        const res = await callAPI("/api/history/recent");
+        if (!res.ok) return;
+        const items = await res.json();
+        if (items.length === 0) return;
+        const rehydrated: Message[] = items.flatMap(
+          (item: {
+            question: string;
+            sql: string;
+            has_error: boolean;
+            error: string | null;
+          }) => [
+            { role: "user" as const, question: item.question },
+            {
+              role: "assistant" as const,
+              sql: item.sql,
+              results: [],
+              error: item.has_error ? item.error : null,
+              display_columns: [],
+              chart_hint: null,
+              truncated: false,
+              rehydrated: true,
+            },
+          ],
+        );
+        setMessages(rehydrated);
+      } catch {
+        // silently fail
+      }
+    })();
+  }, [isSignedIn]);
 
   async function handleAsk(q?: string) {
     const text = q ?? question;
@@ -744,116 +815,56 @@ export default function Home() {
       )}
 
       {/* ── Sidebar ── */}
+      {/* Schema/History Sidebar */}
       <aside
         className={`
         fixed md:static inset-y-0 left-0 z-30
-        w-72 md:w-76 border-r border-border/60 flex flex-col bg-background
+        w-72 md:w-80 border-r border-border/60 flex flex-col bg-background
         transform transition-transform duration-300 ease-in-out
         ${schemaOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0"}
       `}
       >
-        {/* Sidebar top */}
-        <div className="p-4 border-b border-border/60 flex items-start justify-between shrink-0">
-          <div className="space-y-0.5">
-            <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-muted-foreground">
-              Schema
-            </p>
-            <p className="text-xs text-foreground/70 font-mono truncate max-w-[190px]">
-              {activeLabel}
-            </p>
-          </div>
-          <button
-            className="md:hidden text-muted-foreground hover:text-foreground transition-colors"
-            onClick={() => setSchemaOpen(false)}
-          >
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2.5"
-            >
-              <path d="M18 6L6 18M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-
-        {/* Upload controls */}
-        <div className="p-3 border-b border-border/60 space-y-2 shrink-0">
-          {!session ? (
-            <>
-              <p className="text-[11px] text-muted-foreground leading-relaxed">
-                {isSignedIn
-                  ? "Upload a CSV to query your own data."
-                  : "Sign in to upload your own CSV. Chinook is used by default."}
-              </p>
-              {isSignedIn ? (
-                <button
-                  disabled={uploading}
-                  onClick={() => fileInputRef.current?.click()}
-                  className="w-full flex items-center justify-center gap-2 text-xs py-2 rounded-lg border border-dashed border-border hover:border-indigo-400/60 hover:bg-indigo-500/5 transition-all text-muted-foreground hover:text-indigo-400 disabled:opacity-50"
-                >
-                  <svg
-                    width="13"
-                    height="13"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2.5"
-                  >
-                    <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
-                    <polyline points="17 8 12 3 7 8" />
-                    <line x1="12" y1="3" x2="12" y2="15" />
-                  </svg>
-                  {uploading ? "Uploading…" : "Upload CSV"}
-                </button>
-              ) : (
-                <SignInButton mode="modal">
-                  <button className="w-full flex items-center justify-center gap-2 text-xs py-2 rounded-lg border border-dashed border-indigo-400/40 hover:border-indigo-400/60 hover:bg-indigo-500/5 transition-all text-indigo-400">
-                    <svg
-                      width="13"
-                      height="13"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2.5"
-                    >
-                      <path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2" />
-                      <circle cx="12" cy="7" r="4" />
-                    </svg>
-                    Sign in to upload CSV
-                  </button>
-                </SignInButton>
-              )}
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".csv"
-                className="hidden"
-                onChange={handleUpload}
-              />
-            </>
-          ) : (
-            <>
-              <div className="rounded-lg bg-emerald-500/10 border border-emerald-500/20 px-3 py-2.5 flex items-center gap-2">
-                <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
-                <div className="min-w-0">
-                  <p className="text-[11px] text-emerald-600 dark:text-emerald-400 font-semibold">
-                    CSV loaded
-                  </p>
-                  <p className="text-[11px] text-muted-foreground truncate">
-                    {session.table_name}
-                  </p>
-                </div>
-              </div>
+        {/* Sidebar header with tabs */}
+        <div className="border-b border-border/60 shrink-0">
+          <div className="p-3 flex items-center justify-between">
+            <div className="flex gap-1">
               <button
-                onClick={handleClearSession}
-                className="w-full flex items-center justify-center gap-2 text-xs py-1.5 rounded-lg border border-border/60 hover:bg-muted/60 transition-all text-muted-foreground hover:text-foreground"
+                onClick={() => setSidebarTab("schema")}
+                className={`text-xs px-3 py-1.5 rounded-lg transition-all ${
+                  sidebarTab === "schema"
+                    ? "bg-muted text-foreground font-medium"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                Schema
+              </button>
+              {isSignedIn && (
+                <button
+                  onClick={() => {
+                    setSidebarTab("history");
+                    fetchHistory();
+                  }}
+                  className={`text-xs px-3 py-1.5 rounded-lg transition-all ${
+                    sidebarTab === "history"
+                      ? "bg-muted text-foreground font-medium"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  History
+                </button>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <p className="text-[10px] text-muted-foreground font-mono truncate max-w-[120px]">
+                {activeLabel}
+              </p>
+              <button
+                className="md:hidden text-muted-foreground hover:text-foreground transition-colors"
+                onClick={() => setSchemaOpen(false)}
               >
                 <svg
-                  width="12"
-                  height="12"
+                  width="16"
+                  height="16"
                   viewBox="0 0 24 24"
                   fill="none"
                   stroke="currentColor"
@@ -861,16 +872,162 @@ export default function Home() {
                 >
                   <path d="M18 6L6 18M6 6l12 12" />
                 </svg>
-                Clear — switch to Chinook
               </button>
-            </>
-          )}
+            </div>
+          </div>
         </div>
 
-        {/* Schema text */}
-        <pre className="p-4 text-[11px] overflow-auto flex-1 leading-relaxed text-muted-foreground/70 whitespace-pre-wrap font-mono">
-          {activeSchema}
-        </pre>
+        {/* Schema tab */}
+        {sidebarTab === "schema" && (
+          <>
+            <div className="p-3 border-b border-border/60 space-y-2 shrink-0">
+              {!session ? (
+                <>
+                  <p className="text-[11px] text-muted-foreground leading-relaxed">
+                    {isSignedIn
+                      ? "Upload a CSV to query your own data."
+                      : "Sign in to upload your own CSV. Chinook is used by default."}
+                  </p>
+                  {isSignedIn ? (
+                    <button
+                      disabled={uploading}
+                      onClick={() => fileInputRef.current?.click()}
+                      className="w-full flex items-center justify-center gap-2 text-xs py-2 rounded-lg border border-dashed border-border hover:border-indigo-400/60 hover:bg-indigo-500/5 transition-all text-muted-foreground hover:text-indigo-400 disabled:opacity-50"
+                    >
+                      <svg
+                        width="13"
+                        height="13"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2.5"
+                      >
+                        <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
+                        <polyline points="17 8 12 3 7 8" />
+                        <line x1="12" y1="3" x2="12" y2="15" />
+                      </svg>
+                      {uploading ? "Uploading…" : "Upload CSV"}
+                    </button>
+                  ) : (
+                    <SignInButton mode="modal">
+                      <button className="w-full flex items-center justify-center gap-2 text-xs py-2 rounded-lg border border-dashed border-indigo-400/40 hover:border-indigo-400/60 hover:bg-indigo-500/5 transition-all text-indigo-400">
+                        <svg
+                          width="13"
+                          height="13"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2.5"
+                        >
+                          <path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2" />
+                          <circle cx="12" cy="7" r="4" />
+                        </svg>
+                        Sign in to upload CSV
+                      </button>
+                    </SignInButton>
+                  )}
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept=".csv"
+                    className="hidden"
+                    onChange={handleUpload}
+                  />
+                </>
+              ) : (
+                <>
+                  <div className="rounded-lg bg-emerald-500/10 border border-emerald-500/20 px-3 py-2.5 flex items-center gap-2">
+                    <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
+                    <div className="min-w-0">
+                      <p className="text-[11px] text-emerald-600 dark:text-emerald-400 font-semibold">
+                        CSV loaded
+                      </p>
+                      <p className="text-[11px] text-muted-foreground truncate">
+                        {session.table_name}
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={handleClearSession}
+                    className="w-full flex items-center justify-center gap-2 text-xs py-1.5 rounded-lg border border-border/60 hover:bg-muted/60 transition-all text-muted-foreground hover:text-foreground"
+                  >
+                    <svg
+                      width="12"
+                      height="12"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2.5"
+                    >
+                      <path d="M18 6L6 18M6 6l12 12" />
+                    </svg>
+                    Clear — switch to Chinook
+                  </button>
+                </>
+              )}
+            </div>
+            <pre className="p-4 text-[11px] overflow-auto flex-1 leading-relaxed text-muted-foreground/70 whitespace-pre-wrap font-mono">
+              {activeSchema}
+            </pre>
+          </>
+        )}
+
+        {/* History tab */}
+        {sidebarTab === "history" && isSignedIn && (
+          <div className="flex-1 overflow-auto">
+            {historyLoading ? (
+              <div className="p-4 text-xs text-muted-foreground">
+                Loading history…
+              </div>
+            ) : history.length === 0 ? (
+              <div className="p-4 text-xs text-muted-foreground">
+                No queries yet. Ask something!
+              </div>
+            ) : (
+              <div className="divide-y divide-border/40">
+                {history.map((item) => (
+                  <button
+                    key={item.id}
+                    onClick={() => {
+                      handleAsk(item.question);
+                      setSchemaOpen(false);
+                    }}
+                    className="w-full text-left px-4 py-3 hover:bg-muted/40 transition-colors group"
+                  >
+                    <div className="flex items-start gap-2">
+                      <span
+                        className={`mt-0.5 shrink-0 text-[10px] ${item.has_error ? "text-red-400" : "text-emerald-400"}`}
+                      >
+                        {item.has_error ? "✗" : "✓"}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-xs text-foreground/80 truncate leading-snug group-hover:text-foreground transition-colors">
+                          {item.question}
+                        </p>
+                        <p className="text-[10px] text-muted-foreground mt-0.5">
+                          {new Date(item.created_at).toLocaleDateString(
+                            "en-US",
+                            {
+                              month: "short",
+                              day: "numeric",
+                              hour: "2-digit",
+                              minute: "2-digit",
+                            },
+                          )}
+                          {item.result_rows !== null && !item.has_error && (
+                            <span className="ml-1.5">
+                              · {item.result_rows} rows
+                            </span>
+                          )}
+                        </p>
+                      </div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </aside>
 
       {/* ── Main ── */}
@@ -1125,7 +1282,9 @@ export default function Home() {
                     ) : (
                       <>
                         {/* SQL block — dark editor style */}
-                        <div className="rounded-xl overflow-hidden border border-border/40 shadow-sm">
+                        <div
+                          className={`rounded-xl overflow-hidden border shadow-sm ${msg.rehydrated ? "opacity-60" : "border-border/40"}`}
+                        >
                           <div className="bg-zinc-950 border-b border-white/5 px-4 py-2 flex justify-between items-center">
                             <div className="flex items-center gap-2">
                               <div className="flex gap-1">
