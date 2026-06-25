@@ -1,5 +1,5 @@
 "use client";
-
+import { useAuth, useUser, SignInButton, UserButton } from "@clerk/nextjs";
 import { useState, useRef, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -613,6 +613,9 @@ function LoadingMessage() {
 }
 
 export default function Home() {
+  const { getToken, isSignedIn: isSignedInRaw } = useAuth();
+  const { user } = useUser();
+  const isSignedIn = !!isSignedInRaw;
   const [messages, setMessages] = useState<Message[]>([]);
   const [question, setQuestion] = useState("");
   const [loading, setLoading] = useState(false);
@@ -622,6 +625,17 @@ export default function Home() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
+  // Auth-aware fetch wrapper
+  async function callAPI(endpoint: string, options: RequestInit = {}) {
+    const token = isSignedIn ? await getToken() : null;
+    return fetch(`${process.env.NEXT_PUBLIC_API_URL}${endpoint}`, {
+      ...options,
+      headers: {
+        ...options.headers,
+        ...(token && { Authorization: `Bearer ${token}` }),
+      },
+    });
+  }
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
@@ -638,10 +652,14 @@ export default function Home() {
     const formData = new FormData();
     formData.append("file", file);
     try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/upload`, {
+      const res = await callAPI("/api/upload", {
         method: "POST",
         body: formData,
       });
+      if (res.status === 401) {
+        alert("Please sign in to upload CSV files.");
+        return;
+      }
       const data = await res.json();
       setSession(data);
       setMessages([]);
@@ -680,7 +698,7 @@ export default function Home() {
       .slice(-4);
 
     try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/ask`, {
+      const res = await callAPI("/api/ask", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -766,27 +784,48 @@ export default function Home() {
           {!session ? (
             <>
               <p className="text-[11px] text-muted-foreground leading-relaxed">
-                Upload a CSV to query your own data. Chinook is used by default.
+                {isSignedIn
+                  ? "Upload a CSV to query your own data."
+                  : "Sign in to upload your own CSV. Chinook is used by default."}
               </p>
-              <button
-                disabled={uploading}
-                onClick={() => fileInputRef.current?.click()}
-                className="w-full flex items-center justify-center gap-2 text-xs py-2 rounded-lg border border-dashed border-border hover:border-indigo-400/60 hover:bg-indigo-500/5 transition-all text-muted-foreground hover:text-indigo-400 disabled:opacity-50"
-              >
-                <svg
-                  width="13"
-                  height="13"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2.5"
+              {isSignedIn ? (
+                <button
+                  disabled={uploading}
+                  onClick={() => fileInputRef.current?.click()}
+                  className="w-full flex items-center justify-center gap-2 text-xs py-2 rounded-lg border border-dashed border-border hover:border-indigo-400/60 hover:bg-indigo-500/5 transition-all text-muted-foreground hover:text-indigo-400 disabled:opacity-50"
                 >
-                  <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
-                  <polyline points="17 8 12 3 7 8" />
-                  <line x1="12" y1="3" x2="12" y2="15" />
-                </svg>
-                {uploading ? "Uploading…" : "Upload CSV"}
-              </button>
+                  <svg
+                    width="13"
+                    height="13"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2.5"
+                  >
+                    <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
+                    <polyline points="17 8 12 3 7 8" />
+                    <line x1="12" y1="3" x2="12" y2="15" />
+                  </svg>
+                  {uploading ? "Uploading…" : "Upload CSV"}
+                </button>
+              ) : (
+                <SignInButton mode="modal">
+                  <button className="w-full flex items-center justify-center gap-2 text-xs py-2 rounded-lg border border-dashed border-indigo-400/40 hover:border-indigo-400/60 hover:bg-indigo-500/5 transition-all text-indigo-400">
+                    <svg
+                      width="13"
+                      height="13"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2.5"
+                    >
+                      <path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2" />
+                      <circle cx="12" cy="7" r="4" />
+                    </svg>
+                    Sign in to upload CSV
+                  </button>
+                </SignInButton>
+              )}
               <input
                 ref={fileInputRef}
                 type="file"
@@ -888,47 +927,57 @@ export default function Home() {
               </div>
             </div>
 
-            {/* Desktop upload */}
-            <div className="hidden md:block shrink-0">
-              {!session ? (
+            {/* Desktop right side — auth + upload */}
+            <div className="hidden md:flex items-center gap-2 shrink-0">
+              {isSignedIn ? (
                 <>
-                  <button
-                    disabled={uploading}
-                    onClick={() => fileInputRef.current?.click()}
-                    className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-border/60 hover:bg-muted/60 transition-all text-muted-foreground hover:text-foreground disabled:opacity-50"
-                  >
-                    <svg
-                      width="12"
-                      height="12"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2.5"
+                  {!session ? (
+                    <button
+                      disabled={uploading}
+                      onClick={() => fileInputRef.current?.click()}
+                      className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-border/60 hover:bg-muted/60 transition-all text-muted-foreground hover:text-foreground disabled:opacity-50"
                     >
-                      <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
-                      <polyline points="17 8 12 3 7 8" />
-                      <line x1="12" y1="3" x2="12" y2="15" />
-                    </svg>
-                    {uploading ? "Uploading…" : "Upload CSV"}
-                  </button>
+                      <svg
+                        width="12"
+                        height="12"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2.5"
+                      >
+                        <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
+                        <polyline points="17 8 12 3 7 8" />
+                        <line x1="12" y1="3" x2="12" y2="15" />
+                      </svg>
+                      {uploading ? "Uploading…" : "Upload CSV"}
+                    </button>
+                  ) : (
+                    <button
+                      onClick={handleClearSession}
+                      className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-border/60 hover:bg-muted/60 transition-all text-muted-foreground hover:text-foreground"
+                    >
+                      <svg
+                        width="12"
+                        height="12"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2.5"
+                      >
+                        <path d="M18 6L6 18M6 6l12 12" />
+                      </svg>
+                      Clear CSV
+                    </button>
+                  )}
+                  {/* Clerk user avatar + sign out */}
+                  <UserButton />
                 </>
               ) : (
-                <button
-                  onClick={handleClearSession}
-                  className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg border border-border/60 hover:bg-muted/60 transition-all text-muted-foreground hover:text-foreground"
-                >
-                  <svg
-                    width="12"
-                    height="12"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2.5"
-                  >
-                    <path d="M18 6L6 18M6 6l12 12" />
-                  </svg>
-                  Clear CSV
-                </button>
+                <SignInButton mode="modal">
+                  <button className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white transition-all shadow-sm">
+                    Sign in to upload CSV
+                  </button>
+                </SignInButton>
               )}
             </div>
           </div>
@@ -943,6 +992,13 @@ export default function Home() {
                   Chinook music store
                 </span>{" "}
                 by default
+                {!isSignedIn && (
+                  <SignInButton mode="modal">
+                    <button className="ml-2 text-indigo-400 hover:text-indigo-300 underline underline-offset-2">
+                      Sign in to upload your own CSV
+                    </button>
+                  </SignInButton>
+                )}
               </span>
             </div>
           )}
